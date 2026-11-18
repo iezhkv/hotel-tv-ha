@@ -1,0 +1,149 @@
+send_message:
+  target:
+    device:
+      integration: hotel_tv
+    entity:
+      integration: hotel_tv
+  fields:
+    title:
+      required: true
+      example: "Breakfast is served"
+      selector:
+        text:
+    message:
+      example: "Until 10:30 in the restaurant on the ground floor."
+      selector:
+        text:
+          multiline: true
+    kind:
+      default: info
+      selector:
+        select:
+          translation_key: message_kind
+          options:
+            - info
+            - alert
+            - welcome
+            - promo
+    display:
+      default: banner
+      selector:
+        select:
+          translation_key: message_display
+          options:
+            - banner
+            - modal
+            - fullscreen
+    expires_in:
+      selector:
+        duration:
+    all_rooms:
+      default: false
+      selector:
+        boolean:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: hotel_tv
+
+check_in:
+  target:
+    device:
+      integration: hotel_tv
+    entity:
+      integration: hotel_tv
+  fields:
+    guest_name:
+      required: true
+      example: "Maria Ivanova"
+      selector:
+        text:
+    guest_locale:
+      example: "bg"
+      selector:
+        text:
+    welcome_message:
+      selector:
+        text:
+          multiline: true
+    checkout_at:
+      selector:
+        datetime:
+
+check_out:
+  target:
+    device:
+      integration: hotel_tv
+    entity:
+      integration: hotel_tv
+
+set_guest:
+  target:
+    device:
+      integration: hotel_tv
+    entity:
+      integration: hotel_tv
+  fields:
+    guest_name:
+      selector:
+        text:
+    guest_locale:
+      selector:
+        text:
+    welcome_message:
+      selector:
+        text:
+          multiline: true
+    occupied:
+      selector:
+        boolean:
+    checkin_at:
+      selector:
+        datetime:
+    checkout_at:
+      selector:
+        datetime:
+
+send_command:
+  target:
+    device:
+      integration: hotel_tv
+    entity:
+      integration: hotel_tv
+  fields:
+    command:
+      required: true
+      selector:
+        select:
+          options:
+            - power_on
+            - power_off
+            - set_channel
+            - channel_up
+            - channel_down
+            - set_volume
+            - volume_up
+            - volume_down
+            - mute
+            - unmute
+            - play
+            - pause
+            - show_message
+            - open_panel
+            - reload
+            - identify
+    payload:
+      example: '{"number": 5}'
+      selector:
+        object:
+
+refresh_channels:
+  fields:
+    wait:
+      default: false
+      selector:
+        boolean:
+    config_entry_id:
+      selector:
+        config_entry:
+          integration: hotel_tv

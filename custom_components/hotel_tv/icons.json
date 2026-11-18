@@ -1,0 +1,70 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "occupied": {
+        "default": "mdi:bed-empty",
+        "state": {
+          "on": "mdi:bed"
+        }
+      },
+      "tv_online": {
+        "default": "mdi:television-off",
+        "state": {
+          "on": "mdi:television"
+        }
+      }
+    },
+    "button": {
+      "reload": {
+        "default": "mdi:refresh"
+      },
+      "identify": {
+        "default": "mdi:television-guide"
+      },
+      "refresh_channels": {
+        "default": "mdi:playlist-refresh"
+      }
+    },
+    "media_player": {
+      "tv": {
+        "default": "mdi:television",
+        "state": {
+          "off": "mdi:television-off"
+        }
+      }
+    },
+    "select": {
+      "package": {
+        "default": "mdi:television-classic"
+      }
+    },
+    "sensor": {
+      "guest_name": {
+        "default": "mdi:account"
+      },
+      "current_channel": {
+        "default": "mdi:numeric"
+      }
+    }
+  },
+  "services": {
+    "send_message": {
+      "service": "mdi:message-text"
+    },
+    "check_in": {
+      "service": "mdi:location-enter"
+    },
+    "check_out": {
+      "service": "mdi:location-exit"
+    },
+    "set_guest": {
+      "service": "mdi:account-edit"
+    },
+    "send_command": {
+      "service": "mdi:remote-tv"
+    },
+    "refresh_channels": {
+      "service": "mdi:playlist-refresh"
+    }
+  }
+}

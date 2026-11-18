@@ -1,0 +1,306 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Hotel TV",
+        "description": "In the Hotel TV admin open **Settings → API tokens**, create a token and copy it. Then enter the address of the Hotel TV server and the token.",
+        "data": {
+          "url": "Server address",
+          "token": "API token"
+        },
+        "data_description": {
+          "url": "The address you open the Hotel TV admin at, for example http://192.168.1.20:3210",
+          "token": "Starts with htv_"
+        }
+      },
+      "reauth_confirm": {
+        "title": "New API token for {property}",
+        "description": "Hotel TV no longer accepts the API token of {property}. Create a new token in **Settings → API tokens** and enter it here. Exposed room controls are kept.",
+        "data": {
+          "token": "API token"
+        }
+      },
+      "reconfigure": {
+        "title": "Change the Hotel TV server",
+        "description": "Change the server address, for example after it moved. Leave the token empty to keep the current one. It must be the same property.",
+        "data": {
+          "url": "Server address",
+          "token": "API token"
+        }
+      }
+    },
+    "error": {
+      "invalid_url": "This is not a valid web address.",
+      "invalid_auth": "The API token was refused.",
+      "cannot_connect": "Could not connect to the Hotel TV server. Check the address.",
+      "not_hotel_tv": "The server answered, but not like a Hotel TV server. Check the address.",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This property is already connected. Its address and token have been updated.",
+      "reauth_successful": "The new token has been saved.",
+      "reconfigure_successful": "The server address has been changed.",
+      "wrong_property": "That token belongs to another property. Use a token of the same property."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Room controls",
+        "description": "Guests can control some of the room's devices with the TV remote. Only the entities chosen here are ever sent to Hotel TV or controlled from it.",
+        "menu_options": {
+          "map_room": "Choose the entities of a room",
+          "fill_pattern": "Fill other rooms by pattern"
+        }
+      },
+      "map_room": {
+        "title": "Room controls",
+        "description": "Choose a room to pick what its guests may control. A ✓ shows how many entities the room already has.",
+        "data": {
+          "room": "Room"
+        }
+      },
+      "room_entities": {
+        "title": "Room {room}",
+        "description": "Choose the thermostats, lights, switches, covers and scenes the guest of room {room} may control from the TV. Only the entities chosen here are ever sent to Hotel TV or controlled from it. Choose none to expose nothing.",
+        "data": {
+          "entities": "Entities"
+        }
+      },
+      "room_labels": {
+        "title": "Names on the TV: room {room}",
+        "description": "The TV shows each entity under its Home Assistant name. Type a different name where you want one, or leave the field empty.\n\n{entities}"
+      },
+      "fill_pattern": {
+        "title": "Fill other rooms by pattern",
+        "description": "Choose a room that is already set up. For every other room the integration looks for the same entities with that room's name in the entity id (for example `climate.room_203_thermostat` → `climate.room_204_thermostat`) and copies the names shown on the TV. You see what was found before anything is saved.",
+        "data": {
+          "source": "Copy from room",
+          "overwrite": "Also replace rooms that already have entities"
+        },
+        "data_description": {
+          "overwrite": "Off: only rooms with nothing chosen yet are filled."
+        }
+      },
+      "fill_confirm": {
+        "title": "Save the found entities?",
+        "description": "Entities were found for {rooms} room(s). ✓ = found and will be exposed to the guest of that room, ✗ = no such entity (skipped). Rooms listed alone after ✗ have none of the entities and are left as they are.\n\n{result}\n\nSubmit to save."
+      }
+    },
+    "abort": {
+      "not_loaded": "The integration is not loaded or the property has no rooms. Try again when it is connected.",
+      "no_mapped_rooms": "No room has entities yet. Choose the entities of one room first."
+    },
+    "error": {
+      "nothing_found": "No matching entities were found in the other rooms. The entity ids must contain the room's name (for example its number), and rooms that already have entities are skipped unless you choose to replace them."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "occupied": {
+        "name": "Occupied"
+      },
+      "tv_online": {
+        "name": "TV online"
+      }
+    },
+    "button": {
+      "reload": {
+        "name": "Reload TV"
+      },
+      "identify": {
+        "name": "Identify TV"
+      },
+      "refresh_channels": {
+        "name": "Refresh channels"
+      }
+    },
+    "media_player": {
+      "tv": {
+        "name": "TV"
+      }
+    },
+    "select": {
+      "package": {
+        "name": "Channel package"
+      }
+    },
+    "sensor": {
+      "guest_name": {
+        "name": "Guest"
+      },
+      "current_channel": {
+        "name": "Current channel"
+      }
+    }
+  },
+  "exceptions": {
+    "auth_failed": {
+      "message": "Hotel TV refused the API token. Enter a new token."
+    },
+    "cannot_connect": {
+      "message": "Could not connect to the Hotel TV server ({error})."
+    },
+    "api_error": {
+      "message": "Hotel TV refused the request: {error}"
+    },
+    "unknown_source": {
+      "message": "There is no channel {source}."
+    },
+    "unknown_package": {
+      "message": "There is no channel package {package}."
+    },
+    "not_a_room": {
+      "message": "{target} is not a Hotel TV room."
+    },
+    "no_rooms": {
+      "message": "Choose at least one room (a Hotel TV room device or one of its entities), or turn on \"All rooms\"."
+    },
+    "entry_not_loaded": {
+      "message": "The Hotel TV property {entry} is not loaded."
+    },
+    "no_entries": {
+      "message": "No Hotel TV property is connected."
+    },
+    "nothing_to_change": {
+      "message": "Give at least one field to change."
+    }
+  },
+  "selector": {
+    "message_kind": {
+      "options": {
+        "info": "Information",
+        "alert": "Alert",
+        "welcome": "Welcome",
+        "promo": "Promotion"
+      }
+    },
+    "message_display": {
+      "options": {
+        "banner": "Banner",
+        "modal": "Window",
+        "fullscreen": "Full screen"
+      }
+    }
+  },
+  "services": {
+    "send_message": {
+      "name": "Send message",
+      "description": "Shows a message on the TVs of the chosen rooms, or of every room.",
+      "fields": {
+        "title": {
+          "name": "Title",
+          "description": "The heading of the message."
+        },
+        "message": {
+          "name": "Message",
+          "description": "The text under the heading."
+        },
+        "kind": {
+          "name": "Kind",
+          "description": "Information, alert, welcome or promotion."
+        },
+        "display": {
+          "name": "Display",
+          "description": "A banner, a window, or the full screen."
+        },
+        "expires_in": {
+          "name": "Expires in",
+          "description": "Hide the message after this long. Empty = until it is deleted."
+        },
+        "all_rooms": {
+          "name": "All rooms",
+          "description": "Send to every room of the property (when no room is chosen)."
+        },
+        "config_entry_id": {
+          "name": "Property",
+          "description": "With \"All rooms\": only this property. Empty = every connected property."
+        }
+      }
+    },
+    "check_in": {
+      "name": "Check in",
+      "description": "Marks the room occupied, sets the guest and turns the TV on to the welcome screen.",
+      "fields": {
+        "guest_name": {
+          "name": "Guest name",
+          "description": "Shown on the welcome screen."
+        },
+        "guest_locale": {
+          "name": "Guest language",
+          "description": "Language code, for example bg or en."
+        },
+        "welcome_message": {
+          "name": "Welcome message",
+          "description": "Replaces the property's welcome text for this stay."
+        },
+        "checkout_at": {
+          "name": "Check-out",
+          "description": "When the guest leaves."
+        }
+      }
+    },
+    "check_out": {
+      "name": "Check out",
+      "description": "Clears the guest and the room's messages and turns the TV off."
+    },
+    "set_guest": {
+      "name": "Set guest details",
+      "description": "Changes the guest details of the room without a check-in or check-out. Fields left out are kept; an empty text clears the field.",
+      "fields": {
+        "guest_name": {
+          "name": "Guest name",
+          "description": "Shown on the welcome screen."
+        },
+        "guest_locale": {
+          "name": "Guest language",
+          "description": "Language code, for example bg or en."
+        },
+        "welcome_message": {
+          "name": "Welcome message",
+          "description": "Replaces the property's welcome text for this stay."
+        },
+        "occupied": {
+          "name": "Occupied",
+          "description": "Whether a guest is in the room."
+        },
+        "checkin_at": {
+          "name": "Check-in",
+          "description": "When the guest arrived."
+        },
+        "checkout_at": {
+          "name": "Check-out",
+          "description": "When the guest leaves."
+        }
+      }
+    },
+    "send_command": {
+      "name": "Send TV command",
+      "description": "Sends a raw command to the TVs of the chosen rooms.",
+      "fields": {
+        "command": {
+          "name": "Command",
+          "description": "The command type."
+        },
+        "payload": {
+          "name": "Payload",
+          "description": "Parameters of the command, for example {\"number\": 5} for set_channel or {\"volume\": 30} for set_volume."
+        }
+      }
+    },
+    "refresh_channels": {
+      "name": "Refresh channels",
+      "description": "Re-checks the channel sources and reloads every TV.",
+      "fields": {
+        "config_entry_id": {
+          "name": "Property",
+          "description": "Only this property. Empty = every connected property."
+        },
+        "wait": {
+          "name": "Wait for the result",
+          "description": "Wait until every source is checked (10–90 s) and return the probe result. Off = start the refresh and return at once; the TVs reload when it is done."
+        }
+      }
+    }
+  }
+}
