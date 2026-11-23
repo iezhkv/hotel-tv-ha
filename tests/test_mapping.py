@@ -155,6 +155,6 @@ def test_fill_by_pattern_never_copies_the_source_or_other_domains() -> None:
     assert result["r2"].missing == ["light.room_2_main", "light.room_2_main"]
     # A domain that cannot be a control is not proposed even if it exists.
     result = fill_by_pattern(
-        "203", {"lock.room_203": ""}, {"r204": Target("204")}, lambda entity_id: True
+        "203", {"vacuum.room_203": ""}, {"r204": Target("204")}, lambda entity_id: True
     )
-    assert result["r204"] == Proposal(entities={}, missing=["lock.room_204"])
+    assert result["r204"] == Proposal(entities={}, missing=["vacuum.room_204"])

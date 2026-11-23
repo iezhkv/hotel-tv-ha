@@ -1,4 +1,4 @@
-"""Base entities: one HA device per room, plus the property (hub) device."""
+"""Base entities: one HA device per TV, plus the property (hub) device."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .api import HotelTvAuthError, HotelTvError
 from .const import DOMAIN, MANUFACTURER
-from .hub import HotelTvHub, signal_new_entities, signal_room, signal_update
+from .hub import HotelTvHub, signal_new_entities, signal_tv, signal_update
 
 
 class HotelTvEntity(Entity):
@@ -72,25 +72,22 @@ class HotelTvHubEntity(HotelTvEntity):
         self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, hub.property_id)})
 
 
-class HotelTvRoomEntity(HotelTvEntity):
-    """An entity of one room device."""
-
-    # The entity needs a TV in the room to be available.
-    needs_tv = False
+class HotelTvDeviceEntity(HotelTvEntity):
+    """An entity of one TV device."""
 
     def __init__(
-        self, hub: HotelTvHub, room_id: str, description: EntityDescription
+        self, hub: HotelTvHub, tv_id: str, description: EntityDescription
     ) -> None:
         """Initialize."""
         super().__init__(hub, description)
-        self.room_id = room_id
-        self._attr_unique_id = f"{room_id}_{description.key}"
+        self.tv_id = tv_id
+        self._attr_unique_id = f"{tv_id}_{description.key}"
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, room_id)},
-            name=hub.device_name(room_id),
+            identifiers={(DOMAIN, tv_id)},
+            name=hub.device_name(tv_id),
             manufacturer=MANUFACTURER,
-            model="Room",
-            configuration_url=f"{hub.client.url}/admin/rooms",
+            model=hub.tv_model(tv_id),
+            configuration_url=f"{hub.client.url}/admin/devices/{tv_id}",
         )
         # Linked to the property device; `via_device_id` replaces `via_device`
         # from HA 2026.x (the old key is removed in 2027.8).
@@ -101,29 +98,22 @@ class HotelTvRoomEntity(HotelTvEntity):
             self._attr_device_info["via_device"] = (DOMAIN, hub.property_id)
 
     @property
-    def room(self) -> dict[str, Any]:
-        """The latest Room."""
-        return self.hub.rooms.get(self.room_id) or {}
-
-    @property
-    def tv(self) -> dict[str, Any] | None:
-        """The room's first TV device."""
-        return self.hub.tv(self.room_id)
+    def tv(self) -> dict[str, Any]:
+        """The latest Device of the TV."""
+        return self.hub.tvs.get(self.tv_id) or {}
 
     @property
     def available(self) -> bool:
-        """The server is reachable and still lists the room (and its TV)."""
-        if not self.hub.available or self.room_id not in self.hub.rooms:
-            return False
-        return not self.needs_tv or self.tv is not None
+        """The server is reachable and still lists the TV."""
+        return self.hub.available and self.tv_id in self.hub.tvs
 
     async def async_added_to_hass(self) -> None:
-        """Follow the room's updates."""
+        """Follow the TV's updates."""
         await super().async_added_to_hass()
         self.async_on_remove(
             async_dispatcher_connect(
                 self.hass,
-                signal_room(self.hub.entry.entry_id, self.room_id),
+                signal_tv(self.hub.entry.entry_id, self.tv_id),
                 self._async_updated,
             )
         )
@@ -131,30 +121,30 @@ class HotelTvRoomEntity(HotelTvEntity):
     async def _async_command(
         self, command: str, payload: dict[str, Any] | None = None
     ) -> None:
-        """Send a command to the room's TVs."""
+        """Send a command to the TV."""
         await self._async_call(
-            self.hub.client.async_command(self.room_id, command, payload)
+            self.hub.client.async_command(self.tv_id, command, payload)
         )
 
 
-def setup_room_platform(
+def setup_tv_platform(
     hass: HomeAssistant,
     hub: HotelTvHub,
     async_add_entities: AddConfigEntryEntitiesCallback,
     build: Callable[[str], list[Entity]],
 ) -> None:
-    """Add entities for every room now, and for rooms (or TVs) that appear later.
+    """Add entities for every TV now, and for TVs that appear later.
 
-    `build(room_id)` returns the entities the room should have now; the ones already
-    added are skipped.
+    `build(tv_id)` returns the entities the TV should have; the ones already added
+    are skipped.
     """
     added: set[str] = set()
 
     @callback
     def _add() -> None:
         new: list[Entity] = []
-        for room_id in list(hub.rooms):
-            for entity in build(room_id):
+        for tv_id in list(hub.tvs):
+            for entity in build(tv_id):
                 if entity.unique_id and entity.unique_id not in added:
                     added.add(entity.unique_id)
                     new.append(entity)

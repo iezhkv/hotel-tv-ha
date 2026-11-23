@@ -1,4 +1,4 @@
-"""Room controls bridge: definitions to the server, state sync, guest requests."""
+"""TV controls bridge: definitions to the server, state sync, guest requests."""
 
 from __future__ import annotations
 
@@ -19,12 +19,12 @@ from pytest_homeassistant_custom_component.test_util.aiohttp import (
     AiohttpClientMocker,
 )
 
-from .conftest import API, DEV101, R101, R102, calls
+from .conftest import API, TV101, TV102, calls
 
 OPTIONS = {
     "controls": {
-        R101: {"climate.r101": "Климатик", "light.r101": "", "scene.r101": ""},
-        R102: {"switch.r102": ""},
+        TV101: {"climate.r101": "Климатик", "light.r101": "", "scene.r101": ""},
+        TV102: {"switch.r102": ""},
     }
 }
 CLIMATE = {
@@ -60,9 +60,9 @@ def entities(hass: HomeAssistant) -> None:
 def server(aioclient_mock: AiohttpClientMocker) -> AiohttpClientMocker:
     """Accept PATCHes and acks."""
     for key in ("climate.r101", "light.r101", "scene.r101"):
-        aioclient_mock.patch(f"{API}/rooms/{R101}/controls/{key}", json={})
-    aioclient_mock.patch(f"{API}/rooms/{R102}/controls/switch.r102", json={})
-    aioclient_mock.patch(f"{API}/rooms/{R101}/controls/switch.r102", json={})
+        aioclient_mock.patch(f"{API}/devices/{TV101}/controls/{key}", json={})
+    aioclient_mock.patch(f"{API}/devices/{TV102}/controls/switch.r102", json={})
+    aioclient_mock.patch(f"{API}/devices/{TV101}/controls/switch.r102", json={})
     for request_id in range(1, 10):
         aioclient_mock.post(
             f"{API}/control-requests/{request_id}/ack", json={"ok": True}
@@ -75,14 +75,13 @@ def _request(
     key: str,
     action: str,
     params: dict[str, Any] | None = None,
-    room_id: str = R101,
+    tv_id: str = TV101,
     age: float = 0,
 ) -> dict[str, Any]:
     return {
         "id": 100 + request_id,
         "type": "control.requested",
-        "room_id": room_id,
-        "device_id": DEV101,
+        "device_id": tv_id,
         "payload": {
             "request_id": request_id,
             "control_id": "c-1",
@@ -115,9 +114,9 @@ async def test_put_definitions_on_start(
     server: AiohttpClientMocker,
     setup_entry: Callable[..., Any],
 ) -> None:
-    """Every exposed room gets its full control list, in the chosen order."""
+    """Every TV with exposed entities gets its full control list, in the chosen order."""
     await setup_entry(options=OPTIONS)
-    (put101,) = calls(server, "put", f"{API}/rooms/{R101}/controls")
+    (put101,) = calls(server, "put", f"{API}/devices/{TV101}/controls")
     assert put101 == {
         "controls": [
             {
@@ -174,7 +173,7 @@ async def test_put_definitions_on_start(
             },
         ]
     }
-    (put102,) = calls(server, "put", f"{API}/rooms/{R102}/controls")
+    (put102,) = calls(server, "put", f"{API}/devices/{TV102}/controls")
     assert [c["key"] for c in put102["controls"]] == ["switch.r102"]
 
 
@@ -190,29 +189,31 @@ async def test_state_changes_are_patched(
     hass.states.async_set("light.r101", "on", {**LIGHT, "brightness": 128})
     hass.states.async_set("switch.lobby", "on", {"friendly_name": "Lobby"})
     await hass.async_block_till_done()
-    assert calls(server, "patch", f"{API}/rooms/{R101}/controls/light.r101") == []
+    assert calls(server, "patch", f"{API}/devices/{TV101}/controls/light.r101") == []
     await _flush(hass)
-    assert calls(server, "patch", f"{API}/rooms/{R101}/controls/light.r101") == [
+    assert calls(server, "patch", f"{API}/devices/{TV101}/controls/light.r101") == [
         {"state": {"on": True, "brightness": 50}, "available": True}
     ]
     # Unchanged control state: nothing sent.
     hass.states.async_set("light.r101", "on", {**LIGHT, "brightness": 128, "x": 1})
     await _flush(hass)
-    assert len(calls(server, "patch", f"{API}/rooms/{R101}/controls/light.r101")) == 1
+    assert (
+        len(calls(server, "patch", f"{API}/devices/{TV101}/controls/light.r101")) == 1
+    )
     # Unavailable.
     hass.states.async_set("light.r101", "unavailable", {})
     await _flush(hass)
-    assert calls(server, "patch", f"{API}/rooms/{R101}/controls/light.r101")[-1] == {
+    assert calls(server, "patch", f"{API}/devices/{TV101}/controls/light.r101")[-1] == {
         "state": {"on": True, "brightness": 50},
         "available": False,
     }
-    assert len(calls(server, "put", f"{API}/rooms/{R101}/controls")) == 1
+    assert len(calls(server, "put", f"{API}/devices/{TV101}/controls")) == 1
     # New climate modes = new capabilities: full PUT.
     hass.states.async_set(
         "climate.r101", "heat", {**CLIMATE, "hvac_modes": ["off", "heat"]}
     )
     await _flush(hass)
-    assert len(calls(server, "put", f"{API}/rooms/{R101}/controls")) == 2
+    assert len(calls(server, "put", f"{API}/devices/{TV101}/controls")) == 2
     # Nothing is ever sent for an entity that is not exposed.
     assert all("lobby" not in str(url) for _m, url, _d, _h in server.mock_calls)
 
@@ -253,7 +254,7 @@ async def test_guest_requests(
 
     # The TV changed its state optimistically: the real one goes back even if unchanged.
     await _flush(hass)
-    patched = calls(server, "patch", f"{API}/rooms/{R101}/controls/light.r101")
+    patched = calls(server, "patch", f"{API}/devices/{TV101}/controls/light.r101")
     assert patched == [{"state": {"on": True, "brightness": 100}, "available": True}]
 
 
@@ -263,7 +264,7 @@ async def test_requests_refused(
     server: AiohttpClientMocker,
     setup_entry: Callable[..., Any],
 ) -> None:
-    """Non-exposed entities, another room's entity, bad params, stale requests: failed."""
+    """Non-exposed entities, another TV's entity, bad params, stale requests: failed."""
     entry = await setup_entry(options=OPTIONS)
     hub = entry.runtime_data
     switch_on = async_mock_service(hass, "switch", "turn_on")
@@ -271,8 +272,8 @@ async def test_requests_refused(
 
     # Never exposed anywhere.
     await hub.async_handle_event(_request(1, "switch.lobby", "turn_on"))
-    # Exposed, but for room 102: refused when requested from room 101.
-    await hub.async_handle_event(_request(2, "switch.r102", "turn_on", room_id=R101))
+    # Exposed, but for TV 102: refused when requested from TV 101.
+    await hub.async_handle_event(_request(2, "switch.r102", "turn_on", tv_id=TV101))
     # Out of the thermostat's range.
     await hub.async_handle_event(
         _request(3, "climate.r101", "set_temperature", {"temperature": 40})
@@ -281,10 +282,10 @@ async def test_requests_refused(
     await hub.async_handle_event(
         _request(4, "climate.r101", "set_temperature", {"temperature": 22}, age=600)
     )
-    # The right room: allowed.
-    await hub.async_handle_event(_request(5, "switch.r102", "turn_on", room_id=R102))
+    # The right TV: allowed.
+    await hub.async_handle_event(_request(5, "switch.r102", "turn_on", tv_id=TV102))
     # Replayed request id: ignored.
-    await hub.async_handle_event(_request(5, "switch.r102", "turn_on", room_id=R102))
+    await hub.async_handle_event(_request(5, "switch.r102", "turn_on", tv_id=TV102))
     await hass.async_block_till_done()
 
     assert [c.data for c in switch_on] == [{"entity_id": "switch.r102"}]
@@ -324,53 +325,57 @@ async def test_options_flow_and_resync(
     server: AiohttpClientMocker,
     setup_entry: Callable[..., Any],
 ) -> None:
-    """Choosing entities for a room PUTs it; emptying a room PUTs an empty list."""
+    """Choosing entities for a TV PUTs it; emptying a TV PUTs an empty list."""
     entry = await setup_entry(options=OPTIONS)
     assert entry.state is ConfigEntryState.LOADED
 
-    # Room 102: replace the switch with the lobby switch, with a label.
+    # TV 102: replace the switch with the lobby switch, with a label.
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["map_room", "fill_pattern"]
+    assert result["menu_options"] == ["map_tv", "fill_pattern"]
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "map_room"}
+        result["flow_id"], {"next_step_id": "map_tv"}
     )
-    assert result["step_id"] == "map_room"
+    assert result["step_id"] == "map_tv"
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"room": R102}
+        result["flow_id"], {"tv": TV102}
     )
-    assert result["step_id"] == "room_entities"
+    assert result["step_id"] == "tv_entities"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"entities": ["switch.lobby"]}
     )
-    assert result["step_id"] == "room_labels"
+    assert result["step_id"] == "tv_labels"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"switch.lobby": "Вентилатор"}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
-    assert entry.options["controls"][R102] == {"switch.lobby": "Вентилатор"}
-    put102 = calls(server, "put", f"{API}/rooms/{R102}/controls")
+    assert entry.options["controls"][TV102] == {"switch.lobby": "Вентилатор"}
+    put102 = calls(server, "put", f"{API}/devices/{TV102}/controls")
     assert put102[-1]["controls"][0]["key"] == "switch.lobby"
     assert put102[-1]["controls"][0]["label"] == "Вентилатор"
-    assert len(calls(server, "put", f"{API}/rooms/{R101}/controls")) == 1  # unchanged
+    assert (
+        len(calls(server, "put", f"{API}/devices/{TV101}/controls")) == 1
+    )  # unchanged
 
-    # Room 101: nothing exposed any more.
+    # TV 101: nothing exposed any more.
     result = await hass.config_entries.options.async_init(entry.entry_id)
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": "map_room"}
+        result["flow_id"], {"next_step_id": "map_tv"}
     )
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"room": R101}
+        result["flow_id"], {"tv": TV101}
     )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {"entities": []}
     )
     assert result["type"] is FlowResultType.CREATE_ENTRY
     await hass.async_block_till_done()
-    assert R101 not in entry.options["controls"]
-    assert calls(server, "put", f"{API}/rooms/{R101}/controls")[-1] == {"controls": []}
+    assert TV101 not in entry.options["controls"]
+    assert calls(server, "put", f"{API}/devices/{TV101}/controls")[-1] == {
+        "controls": []
+    }
 
     # A request for the formerly exposed light is now refused.
     light_on = async_mock_service(hass, "light", "turn_on")
@@ -380,10 +385,10 @@ async def test_options_flow_and_resync(
     assert _acks(server)[-1] == ("7", "failed")
 
 
-def _pending(request_id: int, key: str, action: str, params=None, room_id=R101, age=0):
+def _pending(request_id: int, key: str, action: str, params=None, tv_id=TV101, age=0):
     return {
         "id": request_id,
-        "room_id": room_id,
+        "device_id": tv_id,
         "control_id": "c-1",
         "key": key,
         "action": action,
@@ -408,7 +413,7 @@ async def test_pending_requests_on_start_and_reconnect(
                 _pending(1, "scene.r101", "activate"),
                 _pending(2, "scene.r101", "activate", age=120),  # too old
                 _pending(3, "switch.lobby", "turn_on"),  # never exposed
-                _pending(4, "switch.r102", "turn_on"),  # other room's entity
+                _pending(4, "switch.r102", "turn_on"),  # other TV's entity
             ]
         },
     )
@@ -453,7 +458,7 @@ async def test_pending_requests_endpoint_missing(
 # -- thermostats -----------------------------------------------------------------
 
 THERMOSTAT = "climate.room_101_thermostat"
-THERMOSTAT_OPTIONS = {"controls": {R101: {THERMOSTAT: ""}}}
+THERMOSTAT_OPTIONS = {"controls": {TV101: {THERMOSTAT: ""}}}
 # Switched by mode only: no TURN_ON / TURN_OFF feature.
 AC = {
     "friendly_name": "AC 101",
@@ -482,7 +487,7 @@ def _without(attributes: dict[str, Any], *keys: str) -> dict[str, Any]:
 @pytest.fixture
 def thermostat_server(aioclient_mock: AiohttpClientMocker) -> AiohttpClientMocker:
     """Accept PATCHes of the thermostat and acks."""
-    aioclient_mock.patch(f"{API}/rooms/{R101}/controls/{THERMOSTAT}", json={})
+    aioclient_mock.patch(f"{API}/devices/{TV101}/controls/{THERMOSTAT}", json={})
     for request_id in range(1, 20):
         aioclient_mock.post(
             f"{API}/control-requests/{request_id}/ack", json={"ok": True}
@@ -501,7 +506,7 @@ async def test_climate_definition_and_unit(
     hass.config.units = US_CUSTOMARY_SYSTEM
     hass.states.async_set(THERMOSTAT, "cool", AC)
     await setup_entry(options=THERMOSTAT_OPTIONS)
-    (put,) = calls(thermostat_server, "put", f"{API}/rooms/{R101}/controls")
+    (put,) = calls(thermostat_server, "put", f"{API}/devices/{TV101}/controls")
     (control,) = put["controls"]
     assert control["capabilities"] == {
         "power": True,
@@ -537,8 +542,8 @@ async def test_climate_capabilities_do_not_flap(
     """Measured values that come and go are PATCHed; the definitions are not re-sent."""
     hass.states.async_set(THERMOSTAT, "cool", AC)
     await setup_entry(options=THERMOSTAT_OPTIONS)
-    put_url = f"{API}/rooms/{R101}/controls"
-    patch_url = f"{API}/rooms/{R101}/controls/{THERMOSTAT}"
+    put_url = f"{API}/devices/{TV101}/controls"
+    patch_url = f"{API}/devices/{TV101}/controls/{THERMOSTAT}"
     assert len(calls(thermostat_server, "put", put_url)) == 1
 
     # Off: Home Assistant nulls the temperature and drops the humidity attribute.
@@ -602,7 +607,7 @@ async def test_climate_measured_capability_appears_once(
     off = {**_without(AC, "current_humidity"), "current_temperature": None}
     hass.states.async_set(THERMOSTAT, "off", off)
     await setup_entry(options=THERMOSTAT_OPTIONS)
-    put_url = f"{API}/rooms/{R101}/controls"
+    put_url = f"{API}/devices/{TV101}/controls"
     (first,) = calls(thermostat_server, "put", put_url)
     assert first["controls"][0]["capabilities"]["current_temperature"] is True
     assert first["controls"][0]["capabilities"]["current_humidity"] is False
@@ -720,7 +725,7 @@ async def test_climate_memory_follows_the_mapping(
     assert bridge._last_hvac_mode == {THERMOSTAT: "cool"}
     assert bridge._measured == {THERMOSTAT: {"current_temperature", "current_humidity"}}
     hass.config_entries.async_update_entry(
-        entry, options={"controls": {R102: {"switch.r102": ""}}}
+        entry, options={"controls": {TV102: {"switch.r102": ""}}}
     )
     await hass.async_block_till_done()
     assert bridge._last_hvac_mode == {}

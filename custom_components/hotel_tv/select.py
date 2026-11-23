@@ -1,4 +1,4 @@
-"""The room's channel package."""
+"""The TV's channel package."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HotelTvConfigEntry
 from .const import DOMAIN
-from .entity import HotelTvRoomEntity, setup_room_platform
+from .entity import HotelTvDeviceEntity, setup_tv_platform
 
 PARALLEL_UPDATES = 0
 
@@ -39,21 +39,21 @@ async def async_setup_entry(
     entry: HotelTvConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the package select of every room."""
+    """Set up the package select of every TV."""
     hub = entry.runtime_data
-    setup_room_platform(
+    setup_tv_platform(
         hass,
         hub,
         async_add_entities,
-        lambda room_id: [HotelTvPackageSelect(hub, room_id, PACKAGE)],
+        lambda tv_id: [HotelTvPackageSelect(hub, tv_id, PACKAGE)],
     )
 
 
-class HotelTvPackageSelect(HotelTvRoomEntity, SelectEntity):
-    """Which channel package the room's TVs show.
+class HotelTvPackageSelect(HotelTvDeviceEntity, SelectEntity):
+    """Which channel package the TV shows.
 
-    A room without its own package follows the property's default package; choosing
-    the default package sets the room back to following it.
+    A TV without its own package follows the property's default package; choosing
+    the default package sets the TV back to following it.
     """
 
     @property
@@ -63,8 +63,8 @@ class HotelTvPackageSelect(HotelTvRoomEntity, SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        """The room's package, or the default one."""
-        package_id = self.room.get("package_id")
+        """The TV's package, or the default one."""
+        package_id = self.tv.get("package_id")
         for label, package in package_options(self.hub.packages).items():
             if (package_id and package.get("id") == package_id) or (
                 not package_id and package.get("is_default")
@@ -73,7 +73,7 @@ class HotelTvPackageSelect(HotelTvRoomEntity, SelectEntity):
         return None
 
     async def async_select_option(self, option: str) -> None:
-        """PATCH the room's package_id."""
+        """PATCH the TV's package_id."""
         package = package_options(self.hub.packages).get(option)
         if package is None:
             raise ServiceValidationError(
@@ -82,7 +82,7 @@ class HotelTvPackageSelect(HotelTvRoomEntity, SelectEntity):
                 translation_placeholders={"package": option},
             )
         package_id = None if package.get("is_default") else package.get("id")
-        room = await self._async_call(
-            self.hub.client.async_update_room(self.room_id, {"package_id": package_id})
+        tv = await self._async_call(
+            self.hub.client.async_update_tv(self.tv_id, {"package_id": package_id})
         )
-        self.hub.apply_room(room)
+        self.hub.apply_tv(tv)

@@ -105,7 +105,7 @@ async def test_client_stream(
     body = (
         "event: ping\ndata: {}\n\n"
         'id: 41\nevent: device.online\ndata: {"id": 41, "type": "device.online"}\n\n'
-        'id: 42\nevent: room.updated\ndata: {"id": 42, "type": "room.updated"}\n\n'
+        'id: 42\nevent: device.updated\ndata: {"id": 42, "type": "device.updated"}\n\n'
     )
     aioclient_mock.get(f"{API}/events", text=body)
     client = HotelTvClient(async_get_clientsession(hass), SERVER, TOKEN)
@@ -113,7 +113,7 @@ async def test_client_stream(
     assert [(e.event, e.id) for e in events] == [
         ("ping", ""),
         ("device.online", "41"),
-        ("room.updated", "42"),
+        ("device.updated", "42"),
     ]
     headers = aioclient_mock.mock_calls[0][3]
     assert headers["Last-Event-ID"] == "40"

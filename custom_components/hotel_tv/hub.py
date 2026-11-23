@@ -1,6 +1,6 @@
 """The runtime of one Hotel TV property (one config entry).
 
-Holds rooms, channels and packages in memory, keeps them current from the server's
+Holds the TVs, channels and packages in memory, keeps them current from the server's
 event stream (`GET /api/v1/events`, SSE) and a periodic full refresh, and tells the
 entities through dispatcher signals.
 """
@@ -41,6 +41,7 @@ from .sse import SseEvent
 
 if TYPE_CHECKING:
     from .bridge import ControlsBridge
+    from .wire import WireHandler
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -52,7 +53,9 @@ DEVICE_STATE_FIELDS = (
     "volume",
     "muted",
 )
-ROOM_EVENT_FIELDS = ("guest_name", "occupied", "package_id")
+TV_EVENT_FIELDS = ("name", "package_id")
+# The HA device model of a TV, by its kind.
+TV_MODELS = {"android": "Android TV", "linux": "Linux TV"}
 
 
 def find_device(
@@ -72,9 +75,9 @@ def find_device(
     return registry.async_get_device(identifiers={ident})
 
 
-def signal_room(entry_id: str, room_id: str) -> str:
-    """Dispatcher signal: one room changed."""
-    return f"{DOMAIN}_{entry_id}_room_{room_id}"
+def signal_tv(entry_id: str, tv_id: str) -> str:
+    """Dispatcher signal: one TV changed."""
+    return f"{DOMAIN}_{entry_id}_tv_{tv_id}"
 
 
 def signal_update(entry_id: str) -> str:
@@ -83,12 +86,12 @@ def signal_update(entry_id: str) -> str:
 
 
 def signal_new_entities(entry_id: str) -> str:
-    """Dispatcher signal: rooms appeared or got their first TV; platforms add entities."""
+    """Dispatcher signal: TVs appeared; platforms add their entities."""
     return f"{DOMAIN}_{entry_id}_new_entities"
 
 
 class HotelTvHub:
-    """Rooms, channels and packages of one property, kept live."""
+    """TVs, channels and packages of one property, kept live."""
 
     def __init__(
         self,
@@ -108,7 +111,8 @@ class HotelTvHub:
             or entry.data.get(CONF_PROPERTY_NAME)
             or "Hotel TV"
         )
-        self.rooms: dict[str, dict[str, Any]] = {}
+        # The server's Device objects by id.
+        self.tvs: dict[str, dict[str, Any]] = {}
         self.channels: list[dict[str, Any]] = []
         self.packages: list[dict[str, Any]] = []
         # The server answered the last full refresh.
@@ -118,6 +122,7 @@ class HotelTvHub:
         self.last_event_at: str | None = None
         self.last_refresh_at: str | None = None
         self.bridge: ControlsBridge | None = None
+        self.wire: WireHandler | None = None
         self.hub_device_id: str | None = None
         self._stopping = False
         self._stop_event = asyncio.Event()
@@ -128,16 +133,17 @@ class HotelTvHub:
 
     async def async_load(self) -> None:
         """First full load; errors propagate (setup turns them into NotReady)."""
-        rooms, channels, packages = await asyncio.gather(
-            self.client.async_get_rooms(),
+        tvs, channels, packages = await asyncio.gather(
+            self.client.async_get_tvs(),
             self.client.async_get_channels(),
             self.client.async_get_packages(),
         )
         self.channels = channels
         self.packages = packages
-        self.rooms = {str(r["id"]): r for r in rooms if r.get("id")}
+        self.tvs = {str(t["id"]): t for t in tvs if t.get("id")}
         self.last_refresh_at = dt_util.utcnow().isoformat()
         self._update_hub_device()
+        self._remove_stale_devices()
 
     @callback
     def async_start(self) -> None:
@@ -163,33 +169,26 @@ class HotelTvHub:
 
     # -- helpers ----------------------------------------------------------------
 
-    def room_name(self, room_id: str) -> str:
-        """The room's name ("204")."""
-        return str((self.rooms.get(room_id) or {}).get("name") or room_id)
+    def tv_name(self, tv_id: str) -> str:
+        """The TV's name ("TV 204")."""
+        return str((self.tvs.get(tv_id) or {}).get("name") or tv_id)
 
-    def device_name(self, room_id: str) -> str:
-        """The HA device name of a room."""
-        return f"{self.property_name} · {self.room_name(room_id)}"
+    def device_name(self, tv_id: str) -> str:
+        """The HA device name of a TV."""
+        return f"{self.property_name} · {self.tv_name(tv_id)}"
 
-    def tv(self, room_id: str) -> dict[str, Any] | None:
-        """The room's first TV device (the one entities follow)."""
-        devices = (self.rooms.get(room_id) or {}).get("devices") or []
-        return devices[0] if devices else None
+    def tv_model(self, tv_id: str) -> str:
+        """The HA device model of a TV ("Android TV")."""
+        kind = str((self.tvs.get(tv_id) or {}).get("kind") or "")
+        return TV_MODELS.get(kind, kind or "TV")
 
-    def room_of_device(self, device_id: str) -> str | None:
-        """The room a TV device is in."""
-        for room_id, room in self.rooms.items():
-            if any(d.get("id") == device_id for d in room.get("devices") or []):
-                return room_id
-        return None
-
-    def room_channels(self, room_id: str) -> list[dict[str, Any]]:
-        """The enabled channels of the room's package (own or default), in its order.
+    def tv_channels(self, tv_id: str) -> list[dict[str, Any]]:
+        """The enabled channels of the TV's package (own or default), in its order.
 
         Falls back to all enabled channels, by number, when the package or its
         channel list is unknown.
         """
-        package_id = (self.rooms.get(room_id) or {}).get("package_id")
+        package_id = (self.tvs.get(tv_id) or {}).get("package_id")
         package = next(
             (
                 p
@@ -211,16 +210,16 @@ class HotelTvHub:
         """A channel of the property."""
         return next((c for c in self.channels if c.get("id") == channel_id), None)
 
-    def ha_device_id(self, room_id: str | None) -> str | None:
-        """The HA device registry id of a room."""
-        if not room_id:
+    def ha_device_id(self, tv_id: str | None) -> str | None:
+        """The HA device registry id of a TV."""
+        if not tv_id:
             return None
-        device = find_device(dr.async_get(self.hass), self.entry.entry_id, room_id)
+        device = find_device(dr.async_get(self.hass), self.entry.entry_id, tv_id)
         return device.id if device else None
 
     @callback
-    def _signal_room(self, room_id: str) -> None:
-        async_dispatcher_send(self.hass, signal_room(self.entry.entry_id, room_id))
+    def _signal_tv(self, tv_id: str) -> None:
+        async_dispatcher_send(self.hass, signal_tv(self.entry.entry_id, tv_id))
 
     @callback
     def _signal_update(self) -> None:
@@ -231,7 +230,9 @@ class HotelTvHub:
         """The token was refused."""
         if not self._reauth_started:
             self._reauth_started = True
-            _LOGGER.warning("Hotel TV refused the API token; reauthentication needed")
+            _LOGGER.warning(
+                "Hotel TV refused the API token; pair again with a new code"
+            )
             self.entry.async_start_reauth(self.hass)
 
     # -- full refresh ---------------------------------------------------------
@@ -240,11 +241,11 @@ class HotelTvHub:
         await self.async_refresh()
 
     async def async_refresh(self) -> bool:
-        """Re-read rooms, channels and packages. False when the server is unreachable."""
+        """Re-read TVs, channels and packages. False when the server is unreachable."""
         async with self._refresh_lock:
             try:
-                rooms, channels, packages = await asyncio.gather(
-                    self.client.async_get_rooms(),
+                tvs, channels, packages = await asyncio.gather(
+                    self.client.async_get_tvs(),
                     self.client.async_get_channels(),
                     self.client.async_get_packages(),
                 )
@@ -263,7 +264,7 @@ class HotelTvHub:
             changed = channels != self.channels or packages != self.packages
             self.channels = channels
             self.packages = packages
-            self.apply_rooms(rooms)
+            self.apply_tvs(tvs)
             self._set_available(True, force_signal=changed)
             return True
 
@@ -274,38 +275,50 @@ class HotelTvHub:
             self._signal_update()
 
     @callback
-    def apply_rooms(self, rooms: list[dict[str, Any]]) -> None:
-        """Replace the room list (full refresh)."""
-        fresh = {str(r["id"]): r for r in rooms if r.get("id")}
-        for room_id in list(self.rooms):
-            if room_id not in fresh:
-                del self.rooms[room_id]
-                self._remove_device(room_id)
+    def apply_tvs(self, tvs: list[dict[str, Any]]) -> None:
+        """Replace the TV list (full refresh)."""
+        fresh = {str(t["id"]): t for t in tvs if t.get("id")}
+        for tv_id in list(self.tvs):
+            if tv_id not in fresh:
+                del self.tvs[tv_id]
+                self._remove_device(tv_id)
         new_entities = False
-        for room_id, room in fresh.items():
-            new_entities |= self._store_room(room_id, room)
+        for tv_id, tv in fresh.items():
+            new_entities |= self._store_tv(tv_id, tv)
         if new_entities:
             async_dispatcher_send(self.hass, signal_new_entities(self.entry.entry_id))
+        self._remap_controls()
 
     @callback
-    def apply_room(self, room: dict[str, Any]) -> None:
-        """Store one room answer (GET / PATCH / checkin / checkout)."""
-        room_id = str(room.get("id") or "")
-        if not room_id:
+    def apply_tv(self, tv: dict[str, Any]) -> None:
+        """Store one Device answer (GET / PATCH)."""
+        tv_id = str(tv.get("id") or "")
+        if not tv_id:
             return
-        if self._store_room(room_id, room):
+        if self._store_tv(tv_id, tv):
             async_dispatcher_send(self.hass, signal_new_entities(self.entry.entry_id))
+        self._remap_controls()
 
-    def _store_room(self, room_id: str, room: dict[str, Any]) -> bool:
-        """Store; signal when changed. True when platforms may have entities to add."""
-        old = self.rooms.get(room_id)
-        self.rooms[room_id] = room
-        if old == room:
+    @callback
+    def _remap_controls(self) -> None:
+        """The TVs' `ha_entities` (server bindings) may have changed."""
+        if self.bridge is not None:
+            self.entry.async_create_task(
+                self.hass, self.bridge.async_remap(), f"{DOMAIN} remap controls"
+            )
+
+    def _store_tv(self, tv_id: str, tv: dict[str, Any]) -> bool:
+        """Store; signal when changed. True when the TV is new (entities to add)."""
+        old = self.tvs.get(tv_id)
+        self.tvs[tv_id] = tv
+        if old == tv:
             return False
-        if old is not None and old.get("name") != room.get("name"):
-            self._update_room_device(room_id)
-        self._signal_room(room_id)
-        return old is None or (not old.get("devices") and bool(room.get("devices")))
+        if old is not None and (
+            old.get("name") != tv.get("name") or old.get("kind") != tv.get("kind")
+        ):
+            self._update_tv_device(tv_id)
+        self._signal_tv(tv_id)
+        return old is None
 
     def _update_hub_device(self) -> None:
         registry = dr.async_get(self.hass)
@@ -320,19 +333,33 @@ class HotelTvHub:
         )
         self.hub_device_id = device.id
 
-    def _update_room_device(self, room_id: str) -> None:
+    def _update_tv_device(self, tv_id: str) -> None:
         registry = dr.async_get(self.hass)
-        device = find_device(registry, self.entry.entry_id, room_id)
-        if device is not None and device.name_by_user is None:
-            registry.async_update_device(device.id, name=self.device_name(room_id))
+        device = find_device(registry, self.entry.entry_id, tv_id)
+        if device is None:
+            return
+        changes: dict[str, Any] = {"model": self.tv_model(tv_id)}
+        if device.name_by_user is None:
+            changes["name"] = self.device_name(tv_id)
+        registry.async_update_device(device.id, **changes)
 
-    def _remove_device(self, room_id: str) -> None:
+    def _remove_device(self, tv_id: str) -> None:
         registry = dr.async_get(self.hass)
-        device = find_device(registry, self.entry.entry_id, room_id)
+        device = find_device(registry, self.entry.entry_id, tv_id)
         if device is not None:
             registry.async_update_device(
                 device.id, remove_config_entry_id=self.entry.entry_id
             )
+
+    def _remove_stale_devices(self) -> None:
+        """Drop devices the server no longer has (also the rooms of API 1.x)."""
+        registry = dr.async_get(self.hass)
+        for device in dr.async_entries_for_config_entry(registry, self.entry.entry_id):
+            idents = {i[1] for i in device.identifiers if i[0] == DOMAIN}
+            if idents and not idents & ({self.property_id} | set(self.tvs)):
+                registry.async_update_device(
+                    device.id, remove_config_entry_id=self.entry.entry_id
+                )
 
     # -- event stream -----------------------------------------------------------
 
@@ -405,24 +432,19 @@ class HotelTvHub:
     async def async_handle_event(self, event: dict[str, Any]) -> None:
         """Apply one integration event and fire it on the HA bus."""
         etype = str(event.get("type") or "")
-        room_id = event.get("room_id")
-        device_id = event.get("device_id")
+        tv_id = event.get("device_id")
+        tv_id = str(tv_id) if tv_id else None
         payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         self.last_event_at = dt_util.utcnow().isoformat()
 
-        if device_id and not room_id:
-            room_id = self.room_of_device(device_id)
-
         if etype == "device.state":
-            self._apply_device(
-                room_id,
-                device_id,
-                {k: payload[k] for k in DEVICE_STATE_FIELDS if k in payload},
+            self._apply_state(
+                tv_id, {k: payload[k] for k in DEVICE_STATE_FIELDS if k in payload}
             )
         elif etype in ("device.online", "device.offline"):
-            self._apply_device(room_id, device_id, {"online": etype == "device.online"})
-        elif etype == "room.updated":
-            await self._async_room_updated(room_id, payload)
+            self._apply_state(tv_id, {"online": etype == "device.online"})
+        elif etype == "device.updated":
+            await self._async_tv_updated(tv_id, payload)
         elif etype == "channels.updated":
             await self._async_channels_updated()
         elif etype == "control.requested" and self.bridge is not None:
@@ -438,60 +460,61 @@ class HotelTvHub:
                 "property_id": self.property_id,
                 "id": event.get("id"),
                 "type": etype,
-                "room_id": room_id,
-                "room_name": self.room_name(room_id) if room_id else None,
-                "device_id": self.ha_device_id(room_id),
-                "tv_device_id": device_id,
+                "device_id": self.ha_device_id(tv_id),
+                "tv_id": tv_id,
+                "tv_name": self.tv_name(tv_id) if tv_id else None,
                 "payload": payload,
                 "created_at": event.get("created_at"),
             },
         )
 
     @callback
-    def _apply_device(
-        self, room_id: str | None, device_id: str | None, changes: dict[str, Any]
-    ) -> None:
-        room = self.rooms.get(room_id or "")
-        devices = (room or {}).get("devices") or []
-        device = next((d for d in devices if d.get("id") == device_id), None)
-        if room is None or device is None:
-            # A device we do not know (just paired / moved): re-read everything.
+    def _apply_state(self, tv_id: str | None, changes: dict[str, Any]) -> None:
+        tv = self.tvs.get(tv_id or "")
+        if tv is None:
+            # A TV we do not know (just added / paired): re-read everything.
             self.hass.async_create_task(self.async_refresh())
             return
-        device.update(changes)
+        tv.update(changes)
         if changes.get("online"):
-            device["last_seen_at"] = dt_util.utcnow().isoformat()
+            tv["last_seen_at"] = dt_util.utcnow().isoformat()
         if "channel_id" in changes and "channel_name" not in changes:
             channel = self.channel_by_id(changes["channel_id"])
-            device["channel_name"] = channel.get("name") if channel else None
-            device["channel_number"] = channel.get("number") if channel else None
-        self._signal_room(str(room_id))
+            tv["channel_name"] = channel.get("name") if channel else None
+            tv["channel_number"] = channel.get("number") if channel else None
+        self._signal_tv(str(tv_id))
 
-    async def _async_room_updated(
-        self, room_id: str | None, payload: dict[str, Any]
+    async def _async_tv_updated(
+        self, tv_id: str | None, payload: dict[str, Any]
     ) -> None:
-        if not room_id:
+        if not tv_id:
             await self.async_refresh()
             return
-        room = self.rooms.get(room_id)
-        if room is not None:
-            # Apply what the event carries at once, then the full room.
-            room.update({k: payload[k] for k in ROOM_EVENT_FIELDS if k in payload})
-            self._signal_room(room_id)
+        tv = self.tvs.get(tv_id)
+        if tv is not None:
+            # Apply what the event carries at once, then the full TV.
+            changes = {k: payload[k] for k in TV_EVENT_FIELDS if k in payload}
+            if any(tv.get(k) != v for k, v in changes.items()):
+                renamed = "name" in changes and tv.get("name") != changes["name"]
+                tv.update(changes)
+                if renamed:
+                    self._update_tv_device(tv_id)
+                self._signal_tv(tv_id)
         try:
-            fresh = await self.client.async_get_room(room_id)
+            fresh = await self.client.async_get_tv(tv_id)
         except HotelTvNotFoundError:
-            if room_id in self.rooms:
-                del self.rooms[room_id]
-                self._remove_device(room_id)
+            if tv_id in self.tvs:
+                del self.tvs[tv_id]
+                self._remove_device(tv_id)
+                self._remap_controls()
             return
         except HotelTvAuthError:
             self.async_start_reauth()
             return
         except HotelTvError as err:
-            _LOGGER.debug("Could not re-read room %s: %s", room_id, err)
+            _LOGGER.debug("Could not re-read TV %s: %s", tv_id, err)
             return
-        self.apply_room(fresh)
+        self.apply_tv(fresh)
 
     async def _async_channels_updated(self) -> None:
         try:

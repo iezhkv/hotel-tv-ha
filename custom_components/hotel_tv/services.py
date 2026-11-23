@@ -1,12 +1,12 @@
-"""Services: messages, check-in / check-out, guest details, raw commands, channels.
+"""Services: messages, raw commands, channels.
 
-Rooms are targeted by their Hotel TV device (or any entity / area of it).
+TVs are targeted by their Home Assistant device (or any entity / area of it).
 """
 
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.config_entries import ConfigEntryState
@@ -24,7 +24,6 @@ from homeassistant.helpers import (
     device_registry as dr,
     entity_registry as er,
 )
-from homeassistant.util import dt as dt_util
 import voluptuous as vol
 
 from .api import HotelTvAuthError, HotelTvError
@@ -33,25 +32,18 @@ from .const import (
     DOMAIN,
     MESSAGE_DISPLAYS,
     MESSAGE_KINDS,
-    SERVICE_CHECK_IN,
-    SERVICE_CHECK_OUT,
     SERVICE_REFRESH_CHANNELS,
     SERVICE_SEND_COMMAND,
     SERVICE_SEND_MESSAGE,
-    SERVICE_SET_GUEST,
 )
 
 if TYPE_CHECKING:
     from .hub import HotelTvHub
 
 ATTR_CONFIG_ENTRY_ID = "config_entry_id"
-ATTR_ALL_ROOMS = "all_rooms"
+ATTR_ALL_TVS = "all_tvs"
 
 TARGET_FIELDS = cv.ENTITY_SERVICE_FIELDS
-
-
-def _iso(value: datetime) -> str:
-    return dt_util.as_utc(value).isoformat()
 
 
 def _seconds(value: timedelta) -> int:
@@ -62,41 +54,12 @@ SEND_MESSAGE_SCHEMA = vol.Schema(
     {
         **TARGET_FIELDS,
         vol.Optional(ATTR_CONFIG_ENTRY_ID): cv.string,
-        vol.Optional(ATTR_ALL_ROOMS, default=False): cv.boolean,
+        vol.Optional(ATTR_ALL_TVS, default=False): cv.boolean,
         vol.Required("title"): vol.All(cv.string, vol.Length(min=1)),
         vol.Optional("message"): cv.string,
         vol.Optional("kind"): vol.In(MESSAGE_KINDS),
         vol.Optional("display"): vol.In(MESSAGE_DISPLAYS),
         vol.Optional("expires_in"): vol.All(cv.time_period, _seconds, vol.Range(min=1)),
-    }
-)
-CHECK_IN_SCHEMA = vol.Schema(
-    {
-        **TARGET_FIELDS,
-        vol.Required("guest_name"): vol.All(cv.string, vol.Length(min=1)),
-        vol.Optional("guest_locale"): cv.string,
-        vol.Optional("welcome_message"): cv.string,
-        vol.Optional("checkout_at"): vol.All(cv.datetime, _iso),
-    }
-)
-CHECK_OUT_SCHEMA = vol.Schema({**TARGET_FIELDS})
-SET_GUEST_FIELDS = (
-    "guest_name",
-    "guest_locale",
-    "welcome_message",
-    "occupied",
-    "checkin_at",
-    "checkout_at",
-)
-SET_GUEST_SCHEMA = vol.Schema(
-    {
-        **TARGET_FIELDS,
-        vol.Optional("guest_name"): vol.Any(None, cv.string),
-        vol.Optional("guest_locale"): vol.Any(None, cv.string),
-        vol.Optional("welcome_message"): vol.Any(None, cv.string),
-        vol.Optional("occupied"): cv.boolean,
-        vol.Optional("checkin_at"): vol.Any(None, vol.All(cv.datetime, _iso)),
-        vol.Optional("checkout_at"): vol.Any(None, vol.All(cv.datetime, _iso)),
     }
 )
 SEND_COMMAND_SCHEMA = vol.Schema(
@@ -131,10 +94,8 @@ def _as_list(value: Any) -> list[str]:
     return [str(v) for v in value]
 
 
-def resolve_rooms(
-    hass: HomeAssistant, call: ServiceCall
-) -> list[tuple[HotelTvHub, str]]:
-    """The (hub, room id) pairs a call targets via devices, entities or areas."""
+def resolve_tvs(hass: HomeAssistant, call: ServiceCall) -> list[tuple[HotelTvHub, str]]:
+    """The (hub, TV id) pairs a call targets via devices, entities or areas."""
     hubs = _hubs(hass)
     dev_reg = dr.async_get(hass)
     ent_reg = er.async_get(hass)
@@ -144,7 +105,7 @@ def resolve_rooms(
         if entry is None or entry.device_id is None:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
-                translation_key="not_a_room",
+                translation_key="not_a_tv",
                 translation_placeholders={"target": entity_id},
             )
         device_ids.append(entry.device_id)
@@ -161,7 +122,7 @@ def resolve_rooms(
                 if hub is None:
                     continue
                 for domain, ident in device.identifiers:
-                    if domain == DOMAIN and ident in hub.rooms:
+                    if domain == DOMAIN and ident in hub.tvs:
                         match = (hub, ident)
         if match is None:
             if call.data.get(ATTR_AREA_ID) and device_id not in _as_list(
@@ -170,22 +131,22 @@ def resolve_rooms(
                 continue  # other devices of an area are fine to skip
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
-                translation_key="not_a_room",
+                translation_key="not_a_tv",
                 translation_placeholders={"target": device_id},
             )
         found[(match[0].entry.entry_id, match[1])] = match
     return list(found.values())
 
 
-def _require_rooms(
+def _require_tvs(
     hass: HomeAssistant, call: ServiceCall
 ) -> list[tuple[HotelTvHub, str]]:
-    rooms = resolve_rooms(hass, call)
-    if not rooms:
+    tvs = resolve_tvs(hass, call)
+    if not tvs:
         raise ServiceValidationError(
-            translation_domain=DOMAIN, translation_key="no_rooms"
+            translation_domain=DOMAIN, translation_key="no_tvs"
         )
-    return rooms
+    return tvs
 
 
 def _selected_hubs(hass: HomeAssistant, call: ServiceCall) -> list[HotelTvHub]:
@@ -235,70 +196,41 @@ async def _send_message(hass: HomeAssistant, call: ServiceCall) -> ServiceRespon
     )
     results: list[dict[str, Any]] = []
     if targeted:
-        for hub, room_id in _require_rooms(hass, call):
+        for hub, tv_id in _require_tvs(hass, call):
             message_id = await _api(
-                hub, hub.client.async_send_message({**body, "room_id": room_id})
+                hub, hub.client.async_send_message({**body, "device_id": tv_id})
             )
-            results.append({"room_id": room_id, "message_id": message_id})
-    elif call.data[ATTR_ALL_ROOMS]:
+            results.append({"tv_id": tv_id, "message_id": message_id})
+    elif call.data[ATTR_ALL_TVS]:
         for hub in _selected_hubs(hass, call):
             message_id = await _api(
-                hub, hub.client.async_send_message({**body, "room_id": None})
+                hub, hub.client.async_send_message({**body, "device_id": None})
             )
             results.append(
                 {
                     "property_id": hub.property_id,
-                    "room_id": None,
+                    "tv_id": None,
                     "message_id": message_id,
                 }
             )
     else:
         raise ServiceValidationError(
-            translation_domain=DOMAIN, translation_key="no_rooms"
+            translation_domain=DOMAIN, translation_key="no_tvs"
         )
     return {"messages": results}
 
 
-async def _check_in(hass: HomeAssistant, call: ServiceCall) -> None:
-    body = {
-        k: call.data[k]
-        for k in ("guest_name", "guest_locale", "welcome_message", "checkout_at")
-        if call.data.get(k) not in (None, "")
-    }
-    for hub, room_id in _require_rooms(hass, call):
-        hub.apply_room(await _api(hub, hub.client.async_check_in(room_id, body)))
-
-
-async def _check_out(hass: HomeAssistant, call: ServiceCall) -> None:
-    for hub, room_id in _require_rooms(hass, call):
-        hub.apply_room(await _api(hub, hub.client.async_check_out(room_id)))
-
-
-async def _set_guest(hass: HomeAssistant, call: ServiceCall) -> None:
-    changes = {
-        k: (None if call.data[k] == "" else call.data[k])
-        for k in SET_GUEST_FIELDS
-        if k in call.data
-    }
-    if not changes:
-        raise ServiceValidationError(
-            translation_domain=DOMAIN, translation_key="nothing_to_change"
-        )
-    for hub, room_id in _require_rooms(hass, call):
-        hub.apply_room(await _api(hub, hub.client.async_update_room(room_id, changes)))
-
-
 async def _send_command(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
     results = []
-    for hub, room_id in _require_rooms(hass, call):
-        devices = await _api(
+    for hub, tv_id in _require_tvs(hass, call):
+        await _api(
             hub,
             hub.client.async_command(
-                room_id, call.data["command"], call.data.get("payload") or None
+                tv_id, call.data["command"], call.data.get("payload") or None
             ),
         )
-        results.append({"room_id": room_id, "devices": devices})
-    return {"rooms": results}
+        results.append({"tv_id": tv_id, "tv_name": hub.tv_name(tv_id)})
+    return {"tvs": results}
 
 
 async def _refresh_channels(hass: HomeAssistant, call: ServiceCall) -> ServiceResponse:
@@ -329,15 +261,6 @@ def async_setup_services(hass: HomeAssistant) -> None:
         wrap(_send_message),
         schema=SEND_MESSAGE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_CHECK_IN, wrap(_check_in), schema=CHECK_IN_SCHEMA
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_CHECK_OUT, wrap(_check_out), schema=CHECK_OUT_SCHEMA
-    )
-    hass.services.async_register(
-        DOMAIN, SERVICE_SET_GUEST, wrap(_set_guest), schema=SET_GUEST_SCHEMA
     )
     hass.services.async_register(
         DOMAIN,

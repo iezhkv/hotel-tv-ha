@@ -20,6 +20,9 @@ REQUEST_TIMEOUT = 20
 CONNECT_TIMEOUT = 15
 # A synchronous POST /channels/refresh probes every source: 10–90 s.
 REFRESH_TIMEOUT = 150
+# POST /ha/pair probes every webhook URL (8 s each) before it answers.
+PAIR_TIMEOUT = 60
+PAIR_PATH = "/api/v1/ha/pair"
 
 
 class HotelTvError(Exception):
@@ -40,7 +43,7 @@ class HotelTvAuthError(HotelTvError):
 
 
 class HotelTvNotFoundError(HotelTvError):
-    """404: the room / message / request does not exist."""
+    """404: the TV / message / request does not exist."""
 
 
 class HotelTvRequestError(HotelTvError):
@@ -57,6 +60,66 @@ def normalize_url(url: str) -> str:
     if parts.query or parts.fragment:
         raise ValueError(url)
     return url
+
+
+def normalize_code(code: str) -> str:
+    """Upper-case the pairing code and restore the ABCD-EFGH dash."""
+    raw = "".join(ch for ch in code.upper() if ch.isalnum())
+    if len(raw) == 8:
+        return f"{raw[:4]}-{raw[4:]}"
+    return code.strip().upper()
+
+
+async def async_pair(
+    session: aiohttp.ClientSession, url: str, code: str, ha: dict[str, Any]
+) -> dict[str, Any]:
+    """POST /api/v1/ha/pair (unsigned; the code is the credential).
+
+    Returns `{ok, connection_id, secret, token, property: {id, name}}`. Raises
+    HotelTvConnectionError when the server cannot be reached, and HotelTvError
+    with the server's slug (`invalid_code`, `expired_code`, `rate_limited`,
+    `unreachable`, …) when it refuses.
+    """
+    try:
+        async with asyncio.timeout(PAIR_TIMEOUT):
+            async with session.post(
+                normalize_url(url) + PAIR_PATH,
+                data=json.dumps({"code": code, "ha": ha}),
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            ) as resp:
+                status = resp.status
+                try:
+                    data = await resp.json(content_type=None)
+                except (aiohttp.ContentTypeError, ValueError):
+                    data = None
+    except (aiohttp.ClientError, TimeoutError) as err:
+        raise HotelTvConnectionError("cannot_connect", str(err)) from err
+    if not isinstance(data, dict):
+        if status == 404:
+            # No pairing endpoint: not a Hotel TV server (or a too old one).
+            raise HotelTvError("not_hotel_tv")
+        raise HotelTvConnectionError("bad_response")
+    if data.get("ok") is not True:
+        slug = data.get("error")
+        if isinstance(slug, dict):
+            slug = slug.get("code")
+        slug = str(slug or f"http_{status}")
+        if status >= 500 and slug != "unreachable":
+            raise HotelTvConnectionError(slug)
+        raise HotelTvError(slug)
+    prop = data.get("property")
+    if (
+        not isinstance(prop, dict)
+        or not prop.get("id")
+        or not data.get("secret")
+        or not data.get("token")
+        or not data.get("connection_id")
+    ):
+        raise HotelTvConnectionError("bad_response")
+    return data
 
 
 def _error_from(status: int, data: Any) -> HotelTvError:
@@ -136,13 +199,13 @@ class HotelTvClient:
             raise HotelTvError("not_hotel_tv")
         return data
 
-    async def async_get_rooms(self) -> list[dict[str, Any]]:
-        """GET /rooms."""
-        return _list(await self._request("GET", "/rooms"), "rooms")
+    async def async_get_tvs(self) -> list[dict[str, Any]]:
+        """GET /devices → every TV of the property."""
+        return _list(await self._request("GET", "/devices"), "devices")
 
-    async def async_get_room(self, room_id: str) -> dict[str, Any]:
-        """GET /rooms/{id}."""
-        return await self._request("GET", f"/rooms/{_seg(room_id)}")
+    async def async_get_tv(self, tv_id: str) -> dict[str, Any]:
+        """GET /devices/{id}."""
+        return await self._request("GET", f"/devices/{_seg(tv_id)}")
 
     async def async_get_channels(self) -> list[dict[str, Any]]:
         """GET /channels."""
@@ -152,33 +215,22 @@ class HotelTvClient:
         """GET /packages."""
         return _list(await self._request("GET", "/packages"), "packages")
 
-    # -- rooms --------------------------------------------------------------
+    # -- TVs ----------------------------------------------------------------
 
-    async def async_update_room(
-        self, room_id: str, changes: dict[str, Any]
+    async def async_update_tv(
+        self, tv_id: str, changes: dict[str, Any]
     ) -> dict[str, Any]:
-        """PATCH /rooms/{id} → Room."""
-        return await self._request("PATCH", f"/rooms/{_seg(room_id)}", changes)
-
-    async def async_check_in(
-        self, room_id: str, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        """POST /rooms/{id}/checkin → Room."""
-        return await self._request("POST", f"/rooms/{_seg(room_id)}/checkin", payload)
-
-    async def async_check_out(self, room_id: str) -> dict[str, Any]:
-        """POST /rooms/{id}/checkout → Room."""
-        return await self._request("POST", f"/rooms/{_seg(room_id)}/checkout", {})
+        """PATCH /devices/{id} ({name?, package_id?}) → Device."""
+        return await self._request("PATCH", f"/devices/{_seg(tv_id)}", changes)
 
     async def async_command(
-        self, room_id: str, command: str, payload: dict[str, Any] | None = None
-    ) -> int:
-        """POST /rooms/{id}/command → number of devices that got it."""
+        self, tv_id: str, command: str, payload: dict[str, Any] | None = None
+    ) -> None:
+        """POST /devices/{id}/command."""
         body: dict[str, Any] = {"type": command}
         if payload:
             body["payload"] = payload
-        data = await self._request("POST", f"/rooms/{_seg(room_id)}/command", body)
-        return int(data.get("devices") or 0)
+        await self._request("POST", f"/devices/{_seg(tv_id)}/command", body)
 
     # -- channels & messages -----------------------------------------------
 
@@ -203,23 +255,23 @@ class HotelTvClient:
         """DELETE /messages/{id}."""
         await self._request("DELETE", f"/messages/{_seg(message_id)}")
 
-    # -- room controls ------------------------------------------------------
+    # -- TV controls --------------------------------------------------------
 
     async def async_put_controls(
-        self, room_id: str, controls: list[dict[str, Any]]
+        self, tv_id: str, controls: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """PUT /rooms/{id}/controls (full replace)."""
+        """PUT /devices/{id}/controls (full replace)."""
         data = await self._request(
-            "PUT", f"/rooms/{_seg(room_id)}/controls", {"controls": controls}
+            "PUT", f"/devices/{_seg(tv_id)}/controls", {"controls": controls}
         )
         return _list(data, "controls")
 
     async def async_patch_control(
-        self, room_id: str, key: str, changes: dict[str, Any]
+        self, tv_id: str, key: str, changes: dict[str, Any]
     ) -> dict[str, Any]:
-        """PATCH /rooms/{id}/controls/{key}."""
+        """PATCH /devices/{id}/controls/{key}."""
         return await self._request(
-            "PATCH", f"/rooms/{_seg(room_id)}/controls/{_seg(key)}", changes
+            "PATCH", f"/devices/{_seg(tv_id)}/controls/{_seg(key)}", changes
         )
 
     async def async_get_pending_requests(self) -> list[dict[str, Any]]:

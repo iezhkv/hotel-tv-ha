@@ -1,4 +1,4 @@
-"""Mapping between Home Assistant entities and Hotel TV room controls.
+"""Mapping between Home Assistant entities and Hotel TV controls (shown on a TV).
 
 See docs/CONTRACTS.md "Control state shapes (HA ⇄ TV)". Pure functions on plain
 values (entity id, state string, attributes dict) so they are testable without a
@@ -30,8 +30,19 @@ CLIMATE_SWING_MODE = 32
 CLIMATE_TURN_OFF = 128
 CLIMATE_TURN_ON = 256
 
+# homeassistant.components.fan.FanEntityFeature
+FAN_SET_SPEED = 1
+
+# homeassistant.components.media_player.MediaPlayerEntityFeature
+MEDIA_PAUSE = 1
+MEDIA_VOLUME_SET = 4
+MEDIA_PLAY = 16384
+
 # homeassistant.components.light.ColorMode values that carry no brightness.
 _NO_BRIGHTNESS_MODES = frozenset({"onoff", "unknown"})
+# ... and those with a colour of their own.
+_COLOR_MODES = frozenset({"hs", "xy", "rgb", "rgbw", "rgbww"})
+DEFAULT_KELVIN = (2000, 6500)
 
 DEFAULT_CLIMATE = {"min_temp": 7.0, "max_temp": 35.0, "step": 0.5}
 DEFAULT_UNIT = "°C"
@@ -139,6 +150,35 @@ def light_dimmable(attributes: Mapping[str, Any]) -> bool:
     return any(str(mode) not in _NO_BRIGHTNESS_MODES for mode in modes)
 
 
+def light_color(attributes: Mapping[str, Any]) -> bool:
+    """The light can take a colour (hue and saturation)."""
+    modes = attributes.get("supported_color_modes") or []
+    return any(str(mode) in _COLOR_MODES for mode in modes)
+
+
+def light_color_temp(attributes: Mapping[str, Any]) -> bool:
+    """The light's white can go from warm to cold."""
+    modes = attributes.get("supported_color_modes") or []
+    return any(str(mode) == "color_temp" for mode in modes)
+
+
+def kelvin_range(attributes: Mapping[str, Any]) -> tuple[int, int]:
+    low = _float_or_none(attributes.get("min_color_temp_kelvin"))
+    high = _float_or_none(attributes.get("max_color_temp_kelvin"))
+    if low and high and low < high:
+        return round(low), round(high)
+    return DEFAULT_KELVIN
+
+
+def _pct_or_none(value: Any) -> int | None:
+    number = _float_or_none(value)
+    return None if number is None else max(0, min(100, round(number)))
+
+
+def _state_or_none(state: str | None) -> str | None:
+    return state if state not in (None, UNAVAILABLE, "unknown") else None
+
+
 def control_state(
     kind: str, state: str | None, attributes: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -164,7 +204,28 @@ def control_state(
             brightness = ha_to_pct(attributes.get("brightness"))
         else:
             brightness = 100
-        return {"on": on, "brightness": brightness}
+        hs = attributes.get("hs_color")
+        hs = list(hs) if isinstance(hs, (list, tuple)) else []
+        hue = _float_or_none(hs[0]) if len(hs) > 0 else None
+        saturation = _float_or_none(hs[1]) if len(hs) > 1 else None
+        kelvin = _float_or_none(attributes.get("color_temp_kelvin"))
+        mode = str(attributes.get("color_mode") or "")
+        if not (light_color(attributes) or light_color_temp(attributes)):
+            return {"on": on, "brightness": brightness}
+        return {
+            "on": on,
+            "brightness": brightness,
+            "hue": round(hue) if on and hue is not None else None,
+            "saturation": round(saturation) if on and saturation is not None else None,
+            "kelvin": round(kelvin) if on and kelvin is not None else None,
+            "color_mode": None
+            if not on
+            else "temp"
+            if mode == "color_temp"
+            else "color"
+            if mode in _COLOR_MODES
+            else None,
+        }
     if kind == "switch":
         return {"on": state == "on"}
     if kind == "cover":
@@ -172,6 +233,18 @@ def control_state(
         if position is None:
             position = 100 if state in ("open", "opening") else 0
         return {"position": max(0, min(100, round(position)))}
+    if kind == "fan":
+        on = state == "on"
+        return {"on": on, "percentage": _pct_or_none(attributes.get("percentage")) if on else 0}
+    if kind == "lock":
+        return {"locked": state == "locked", "state": _state_or_none(state)}
+    if kind == "media":
+        level = _float_or_none(attributes.get("volume_level"))
+        return {
+            "state": _state_or_none(state),
+            "volume": None if level is None else max(0, min(100, round(level * 100))),
+            "muted": attributes.get("is_volume_muted") is True,
+        }
     return {}
 
 
@@ -213,7 +286,30 @@ def control_capabilities(
             "preset_modes": modes("preset_modes", CLIMATE_PRESET_MODE),
         }
     if kind == "light":
-        return {"dimmable": light_dimmable(attributes)}
+        # Colour keys only for lights that have them: a plain light stays as it was.
+        caps: dict[str, Any] = {"dimmable": light_dimmable(attributes)}
+        if light_color(attributes):
+            caps["color"] = True
+        if light_color_temp(attributes):
+            caps["color_temp"] = True
+            caps["min_kelvin"], caps["max_kelvin"] = kelvin_range(attributes)
+        return caps
+    if kind == "cover":
+        # Said only when it cannot be set to a position (open / close only).
+        features = _features(attributes)
+        return {} if features & COVER_SET_POSITION or not features else {"position": False}
+    if kind == "fan":
+        step = _float_or_none(attributes.get("percentage_step"))
+        return {
+            "speed": bool(_features(attributes) & FAN_SET_SPEED),
+            "percentage_step": step if step and 0 < step <= 100 else 25,
+        }
+    if kind == "media":
+        features = _features(attributes)
+        return {
+            "play_pause": bool(features & (MEDIA_PAUSE | MEDIA_PLAY)),
+            "volume": bool(features & MEDIA_VOLUME_SET),
+        }
     return {}
 
 
@@ -226,14 +322,14 @@ def build_control(
     position: int = 0,
     unit: str = DEFAULT_UNIT,
 ) -> dict[str, Any]:
-    """The full control definition for `PUT /rooms/{id}/controls`.
+    """The full control definition for `PUT /devices/{id}/controls`.
 
     `state` None means the entity does not exist (yet): it is sent unavailable.
     `unit` is Home Assistant's temperature unit (climate capabilities).
     """
     kind = control_kind(entity_id)
     if kind is None:
-        raise ValueError(f"{entity_id} cannot be exposed as a room control")
+        raise ValueError(f"{entity_id} cannot be exposed as a TV control")
     attributes = attributes or {}
     return {
         "key": entity_id,
@@ -321,6 +417,26 @@ def service_call(
         dimmable = light_dimmable(attributes)
         if action == "turn_off":
             return ServiceCall("light", "turn_off", target)
+        if action == "set_color":
+            if not light_color(attributes):
+                raise ControlRequestError("light has no colour")
+            hue = _number(params.get("hue"), "hue")
+            saturation = _number(params.get("saturation"), "saturation")
+            if not (0 <= hue <= 360 and 0 <= saturation <= 100):
+                raise ControlRequestError("colour out of range")
+            return ServiceCall(
+                "light", "turn_on", {**target, "hs_color": [round(hue), round(saturation)]}
+            )
+        if action == "set_color_temp":
+            if not light_color_temp(attributes):
+                raise ControlRequestError("light has no colour temperature")
+            low, high = kelvin_range(attributes)
+            kelvin = _number(params.get("kelvin"), "kelvin")
+            if not low <= kelvin <= high:
+                raise ControlRequestError("colour temperature out of range")
+            return ServiceCall(
+                "light", "turn_on", {**target, "color_temp_kelvin": round(kelvin)}
+            )
         if action in ("turn_on", "set_brightness"):
             if action == "set_brightness" or params.get("brightness") is not None:
                 pct = _number(params.get("brightness"), "brightness")
@@ -363,5 +479,38 @@ def service_call(
 
     elif kind == "scene" and action == "activate":
         return ServiceCall("scene", "turn_on", target)
+
+    elif kind == "fan":
+        if action in ("turn_on", "turn_off"):
+            return ServiceCall("fan", action, target)
+        if action == "set_percentage":
+            if not _features(attributes) & FAN_SET_SPEED:
+                raise ControlRequestError("fan has no speeds")
+            pct = _number(params.get("percentage"), "percentage")
+            if not 0 <= pct <= 100:
+                raise ControlRequestError("percentage out of range")
+            if pct == 0:
+                return ServiceCall("fan", "turn_off", target)
+            return ServiceCall("fan", "set_percentage", {**target, "percentage": round(pct)})
+
+    elif kind == "lock":
+        if action in ("lock", "unlock"):
+            return ServiceCall("lock", action, target)
+
+    elif kind == "media":
+        features = _features(attributes)
+        if action == "play_pause":
+            if not features & (MEDIA_PAUSE | MEDIA_PLAY):
+                raise ControlRequestError("player cannot play or pause")
+            return ServiceCall("media_player", "media_play_pause", target)
+        if action == "set_volume":
+            if not features & MEDIA_VOLUME_SET:
+                raise ControlRequestError("player has no volume")
+            pct = _number(params.get("volume"), "volume")
+            if not 0 <= pct <= 100:
+                raise ControlRequestError("volume out of range")
+            return ServiceCall(
+                "media_player", "volume_set", {**target, "volume_level": round(pct) / 100}
+            )
 
     raise ControlRequestError(f"action {action!r} is not valid for {kind}")

@@ -1,11 +1,14 @@
-"""Room controls bridge: guests control the room's Home Assistant entities from the TV.
+"""TV controls bridge: guests control Home Assistant entities from a TV.
 
-The admin chooses, per room, which entities are exposed (options flow). For those
-only, the bridge
-  (a) PUTs the room's control definitions to the server,
+The entities of a TV are the union of what the admin chose for it in the options
+flow and what the hotel bound to it on the server (`ha_entities` of the TV, from
+`GET /devices`). For those only, the bridge
+  (a) PUTs the TV's control definitions to the server (`/devices/{id}/controls`),
   (b) PATCHes their state when the entities change (debounced),
-  (c) executes `control.requested` events from the TV and acks them.
-Nothing that was not exposed for that very room is ever touched.
+  (c) executes `control.requested` events from the TV and acks them,
+  (d) executes `tv.control` messages a TV sends straight to the webhook while the
+      server is unreachable (wire.py), through the same checks.
+Nothing that was not exposed for that very TV is ever touched.
 """
 
 from __future__ import annotations
@@ -57,12 +60,12 @@ _STRUCTURAL = ("kind", "label", "icon", "position", "capabilities")
 
 
 def parse_mapping(options: Mapping[str, Any]) -> dict[str, dict[str, str]]:
-    """{room_id: {entity_id: label override}} from the entry options, cleaned."""
+    """{tv_id: {entity_id: label override}} from the entry options, cleaned."""
     raw = options.get(OPT_CONTROLS) or {}
     mapping: dict[str, dict[str, str]] = {}
     if not isinstance(raw, Mapping):
         return mapping
-    for room_id, entities in raw.items():
+    for tv_id, entities in raw.items():
         if not isinstance(entities, Mapping):
             continue
         clean = {
@@ -71,12 +74,32 @@ def parse_mapping(options: Mapping[str, Any]) -> dict[str, dict[str, str]]:
             if control_kind(str(entity_id)) is not None
         }
         if clean:
-            mapping[str(room_id)] = clean
+            mapping[str(tv_id)] = clean
     return mapping
 
 
+def merge_mapping(
+    chosen: Mapping[str, Mapping[str, str]], tvs: Mapping[str, Mapping[str, Any]]
+) -> dict[str, dict[str, str]]:
+    """The options' choice plus the entities bound on the server, per TV.
+
+    The options keep their order and label overrides; a server-bound entity that
+    is not chosen in the options follows them with no override (= its Home
+    Assistant name). Only entities that can be TV controls are taken.
+    """
+    merged = {tv_id: dict(entities) for tv_id, entities in chosen.items()}
+    for tv_id, tv in tvs.items():
+        bound = tv.get("ha_entities")
+        if not isinstance(bound, list):
+            continue
+        for entity_id in bound:
+            if isinstance(entity_id, str) and control_kind(entity_id) is not None:
+                merged.setdefault(str(tv_id), {}).setdefault(entity_id, "")
+    return {tv_id: entities for tv_id, entities in merged.items() if entities}
+
+
 class ControlsBridge:
-    """Exposes chosen entities of each room to its TV."""
+    """Exposes the chosen entities to each TV."""
 
     def __init__(
         self, hass: HomeAssistant, entry: ConfigEntry, hub: HotelTvHub
@@ -85,8 +108,10 @@ class ControlsBridge:
         self.hass = hass
         self.entry = entry
         self.hub = hub
-        self.mapping = parse_mapping(entry.options)
-        # What the server has, per room and key (the definitions last sent).
+        # What the options chose, and that merged with the server's bindings.
+        self.chosen = parse_mapping(entry.options)
+        self.mapping = merge_mapping(self.chosen, hub.tvs)
+        # What the server has, per TV and key (the definitions last sent).
         self.sent: dict[str, dict[str, dict[str, Any]]] = {}
         self._dirty: dict[str, set[str]] = {}
         self._timers: dict[str, CALLBACK_TYPE] = {}
@@ -110,8 +135,8 @@ class ControlsBridge:
     async def _async_ha_started(self, _hass: HomeAssistant) -> None:
         self._started = True
         self._track()
-        for room_id in list(self.mapping):
-            await self._async_put_room(room_id)
+        for tv_id in list(self.mapping):
+            await self._async_put_tv(tv_id)
         await self.async_process_pending()
 
     async def async_process_pending(self) -> None:
@@ -136,7 +161,7 @@ class ControlsBridge:
             await self.async_handle_request(
                 {
                     "type": "control.requested",
-                    "room_id": request.get("room_id"),
+                    "device_id": request.get("device_id"),
                     "payload": {
                         "request_id": request["id"],
                         "control_id": request.get("control_id"),
@@ -159,19 +184,34 @@ class ControlsBridge:
         self._timers.clear()
 
     async def async_options_updated(self, options: Mapping[str, Any]) -> None:
-        """The admin changed the exposed entities: PUT the rooms that changed."""
+        """The admin changed the exposed entities: PUT the TVs that changed."""
+        self.chosen = parse_mapping(options)
+        await self.async_remap()
+
+    async def async_remap(self) -> None:
+        """Re-merge the options and the server's bindings; PUT the TVs that changed.
+
+        Called when the options change and whenever the hub re-read TVs (their
+        `ha_entities` may have changed, e.g. after `device.updated`).
+        """
         old = self.mapping
-        self.mapping = parse_mapping(options)
+        self.mapping = merge_mapping(self.chosen, self.hub.tvs)
         if not self._started:
             return
-        self._track()
-        for room_id in sorted(set(old) | set(self.mapping)):
-            if old.get(room_id) != self.mapping.get(room_id):
-                await self._async_put_room(room_id)
+        if old != self.mapping:
+            self._track()
+        for tv_id in sorted(set(old) | set(self.mapping)):
+            if old.get(tv_id) != self.mapping.get(tv_id) or (
+                # A TV that (re)appeared on the server, or whose last PUT failed.
+                tv_id in self.mapping
+                and tv_id in self.hub.tvs
+                and tv_id not in self.sent
+            ):
+                await self._async_put_tv(tv_id)
 
-    def exposed(self, room_id: str | None, entity_id: str) -> bool:
-        """The entity was explicitly exposed for this room."""
-        return bool(room_id) and entity_id in self.mapping.get(str(room_id), {})
+    def exposed(self, tv_id: str | None, entity_id: str) -> bool:
+        """The entity is synced to this TV (chosen in the options or bound)."""
+        return bool(tv_id) and entity_id in self.mapping.get(str(tv_id), {})
 
     # -- HA → server -------------------------------------------------------------
 
@@ -205,7 +245,7 @@ class ControlsBridge:
 
         Home Assistant leaves `current_humidity` out (and nulls
         `current_temperature`) while the value is unknown — e.g. a thermostat that
-        is off. Following that would re-send the room's definitions every time.
+        is off. Following that would re-send the TV's definitions every time.
         """
         seen = self._measured.setdefault(control["key"], set())
         capabilities = control["capabilities"]
@@ -215,13 +255,13 @@ class ControlsBridge:
             elif name in seen:
                 capabilities[name] = True
 
-    def definitions(self, room_id: str) -> list[dict[str, Any]]:
-        """The room's control definitions from the entities' current state."""
+    def definitions(self, tv_id: str) -> list[dict[str, Any]]:
+        """The TV's control definitions from the entities' current state."""
         result = []
-        sent = self.sent.get(room_id, {})
+        sent = self.sent.get(tv_id, {})
         unit = str(self.hass.config.units.temperature_unit)
         for position, (entity_id, label) in enumerate(
-            self.mapping.get(room_id, {}).items()
+            self.mapping.get(tv_id, {}).items()
         ):
             state = self.hass.states.get(entity_id)
             control = build_control(
@@ -249,61 +289,61 @@ class ControlsBridge:
             result.append(control)
         return result
 
-    async def _async_put_room(self, room_id: str) -> None:
-        if room_id not in self.hub.rooms:
-            _LOGGER.debug("Room %s is not on the server; controls not sent", room_id)
-            self.sent.pop(room_id, None)
+    async def _async_put_tv(self, tv_id: str) -> None:
+        if tv_id not in self.hub.tvs:
+            _LOGGER.debug("TV %s is not on the server; controls not sent", tv_id)
+            self.sent.pop(tv_id, None)
             return
-        controls = self.definitions(room_id)
+        controls = self.definitions(tv_id)
         try:
-            await self.hub.client.async_put_controls(room_id, controls)
+            await self.hub.client.async_put_controls(tv_id, controls)
         except HotelTvAuthError:
             self.hub.async_start_reauth()
-            self.sent.pop(room_id, None)
+            self.sent.pop(tv_id, None)
             return
         except HotelTvError as err:
             self.last_error = str(err)
             _LOGGER.warning(
-                "Could not send the controls of room %s: %s",
-                self.hub.room_name(room_id),
+                "Could not send the controls of TV %s: %s",
+                self.hub.tv_name(tv_id),
                 err,
             )
             # Unknown server state: the next change sends everything again.
-            self.sent.pop(room_id, None)
+            self.sent.pop(tv_id, None)
             return
-        self.sent[room_id] = {c["key"]: c for c in controls}
+        self.sent[tv_id] = {c["key"]: c for c in controls}
 
     @callback
     def _async_state_changed(self, event: Event[EventStateChangedData]) -> None:
         entity_id = event.data["entity_id"]
         new_state = event.data["new_state"]
         self._remember_mode(entity_id, new_state.state if new_state else None)
-        for room_id, entities in self.mapping.items():
+        for tv_id, entities in self.mapping.items():
             if entity_id in entities:
-                self._mark_dirty(room_id, entity_id)
+                self._mark_dirty(tv_id, entity_id)
 
     @callback
-    def _mark_dirty(self, room_id: str, entity_id: str) -> None:
-        self._dirty.setdefault(room_id, set()).add(entity_id)
-        if room_id in self._timers:
+    def _mark_dirty(self, tv_id: str, entity_id: str) -> None:
+        self._dirty.setdefault(tv_id, set()).add(entity_id)
+        if tv_id in self._timers:
             return
 
         @callback
         def _fire(_now: Any) -> None:
-            self._timers.pop(room_id, None)
+            self._timers.pop(tv_id, None)
             self.entry.async_create_task(
-                self.hass, self.async_flush(room_id), f"hotel_tv flush {room_id}"
+                self.hass, self.async_flush(tv_id), f"hotel_tv flush {tv_id}"
             )
 
-        self._timers[room_id] = async_call_later(self.hass, CONTROL_DEBOUNCE, _fire)
+        self._timers[tv_id] = async_call_later(self.hass, CONTROL_DEBOUNCE, _fire)
 
-    async def async_flush(self, room_id: str) -> None:
-        """Push the room's changed controls: PATCH state, or PUT when the shape changed."""
-        keys = self._dirty.pop(room_id, set())
-        if room_id not in self.mapping:
+    async def async_flush(self, tv_id: str) -> None:
+        """Push the TV's changed controls: PATCH state, or PUT when the shape changed."""
+        keys = self._dirty.pop(tv_id, set())
+        if tv_id not in self.mapping:
             return
-        sent = self.sent.get(room_id)
-        current = {c["key"]: c for c in self.definitions(room_id)}
+        sent = self.sent.get(tv_id)
+        current = {c["key"]: c for c in self.definitions(tv_id)}
         if (
             sent is None
             or set(sent) != set(current)
@@ -313,7 +353,7 @@ class ControlsBridge:
                 for f in _STRUCTURAL
             )
         ):
-            await self._async_put_room(room_id)
+            await self._async_put_tv(tv_id)
             return
         for key in sorted(keys):
             new = current.get(key)
@@ -324,7 +364,7 @@ class ControlsBridge:
                 continue
             try:
                 await self.hub.client.async_patch_control(
-                    room_id, key, {"state": new["state"], "available": new["available"]}
+                    tv_id, key, {"state": new["state"], "available": new["available"]}
                 )
             except HotelTvAuthError:
                 self.hub.async_start_reauth()
@@ -333,7 +373,7 @@ class ControlsBridge:
                 self.last_error = str(err)
                 _LOGGER.debug("Could not update control %s: %s", key, err)
                 # The server's copy is unknown now: send it all next time.
-                self.sent.pop(room_id, None)
+                self.sent.pop(tv_id, None)
                 return
             sent[key] = new
 
@@ -351,12 +391,12 @@ class ControlsBridge:
             return
         self._handled.append(request_key)
 
-        room_id = str(event.get("room_id") or "")
+        tv_id = str(event.get("device_id") or "")
         key = str(payload.get("key") or "")
         action = str(payload.get("action") or "")
         params = payload.get("params")
 
-        status = await self._async_execute(event, room_id, key, action, params)
+        status = await self._async_execute(event, tv_id, key, action, params)
         try:
             await self.hub.client.async_ack(request_id, status)
         except HotelTvAuthError:
@@ -366,37 +406,54 @@ class ControlsBridge:
                 "Could not acknowledge control request %s: %s", request_id, err
             )
 
-        if self.exposed(room_id, key):
+        if self.exposed(tv_id, key):
             # The server applied the guest's wish optimistically; send the truth.
-            sent = self.sent.get(room_id, {}).get(key)
+            sent = self.sent.get(tv_id, {}).get(key)
             if sent is not None:
                 sent["state"] = None
-            self._mark_dirty(room_id, key)
+            self._mark_dirty(tv_id, key)
 
     async def _async_execute(
         self,
         event: Mapping[str, Any],
-        room_id: str,
+        tv_id: str,
         key: str,
         action: str,
         params: Any,
     ) -> str:
-        if not self.exposed(room_id, key):
-            _LOGGER.warning(
-                "Refused a TV request for %s in room %s: not exposed for that room",
-                key or "?",
-                self.hub.room_name(room_id) if room_id else "?",
-            )
-            return "failed"
+        """A `control.requested`: "done" or "failed" for the ack."""
         created = dt_util.parse_datetime(str(event.get("created_at") or ""))
-        if created is not None and (
-            (dt_util.utcnow() - created).total_seconds() > CONTROL_REQUEST_MAX_AGE
+        if (
+            self.exposed(tv_id, key)
+            and created is not None
+            and (dt_util.utcnow() - created).total_seconds() > CONTROL_REQUEST_MAX_AGE
         ):
             _LOGGER.info("Ignored a stale TV request for %s (%s)", key, created)
             return "failed"
+        error = await self.async_execute(tv_id, key, action, params)
+        return "done" if error is None else "failed"
+
+    async def async_execute(
+        self, tv_id: str, key: str, action: str, params: Any
+    ) -> str | None:
+        """Carry out a guest action on an entity of that TV.
+
+        Shared by `control.requested` (server) and `tv.control` (the TV itself,
+        offline). None when done, otherwise the error slug: `forbidden` (not an
+        entity of that TV), `unavailable`, `invalid_request` (the action or its
+        parameters do not fit the entity's current capabilities) or `failed`
+        (the service call failed).
+        """
+        if not self.exposed(tv_id, key):
+            _LOGGER.warning(
+                "Refused a request for %s from TV %s: not exposed for that TV",
+                key or "?",
+                self.hub.tv_name(tv_id) if tv_id else "?",
+            )
+            return "forbidden"
         state = self.hass.states.get(key)
         if state is None or state.state == "unavailable":
-            return "failed"
+            return "unavailable"
         try:
             call = service_call(
                 key,
@@ -407,7 +464,7 @@ class ControlsBridge:
             )
         except ControlRequestError as err:
             _LOGGER.info("Refused a TV request for %s: %s", key, err)
-            return "failed"
+            return "invalid_request"
         try:
             async with asyncio.timeout(SERVICE_CALL_TIMEOUT):
                 await self.hass.services.async_call(
@@ -426,4 +483,15 @@ class ControlsBridge:
                 err,
             )
             return "failed"
-        return "done"
+        return None
+
+    def control_state(self, entity_id: str) -> dict[str, Any] | None:
+        """The control `state` of an entity as it is now (None: cannot be one)."""
+        if control_kind(entity_id) is None:
+            return None
+        state = self.hass.states.get(entity_id)
+        return build_control(
+            entity_id,
+            state.state if state else None,
+            state.attributes if state else None,
+        )["state"]

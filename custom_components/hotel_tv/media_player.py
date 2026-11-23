@@ -1,4 +1,4 @@
-"""The room's TV as a media player."""
+"""Each TV as a media player."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import HotelTvConfigEntry
 from .const import DOMAIN
-from .entity import HotelTvRoomEntity, setup_room_platform
+from .entity import HotelTvDeviceEntity, setup_tv_platform
 
 PARALLEL_UPDATES = 0
 
@@ -39,22 +39,20 @@ async def async_setup_entry(
     entry: HotelTvConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up a media player for every room with a TV."""
+    """Set up a media player for every TV."""
     hub = entry.runtime_data
-    setup_room_platform(
+    setup_tv_platform(
         hass,
         hub,
         async_add_entities,
-        lambda room_id: (
-            [HotelTvMediaPlayer(hub, room_id, TV)] if hub.tv(room_id) else []
-        ),
+        lambda tv_id: [HotelTvMediaPlayer(hub, tv_id, TV)],
     )
 
 
-class HotelTvMediaPlayer(HotelTvRoomEntity, MediaPlayerEntity):
-    """Power, channel and volume of the room's TV (all TVs of the room get commands)."""
+class HotelTvMediaPlayer(HotelTvDeviceEntity, MediaPlayerEntity):
+    """Power, channel and volume of the TV (the main entity of its device)."""
 
-    needs_tv = True
+    _attr_name = None
     _attr_media_content_type = MediaType.CHANNEL
     _attr_supported_features = (
         MediaPlayerEntityFeature.TURN_ON
@@ -72,41 +70,38 @@ class HotelTvMediaPlayer(HotelTvRoomEntity, MediaPlayerEntity):
     @property
     def available(self) -> bool:
         """The TV is online."""
-        tv = self.tv
-        return super().available and tv is not None and bool(tv.get("online"))
+        return super().available and bool(self.tv.get("online"))
 
     def _channels(self) -> list[dict[str, Any]]:
-        return self.hub.room_channels(self.room_id)
+        return self.hub.tv_channels(self.tv_id)
 
     @property
     def state(self) -> MediaPlayerState | None:
         """On / off."""
-        tv = self.tv
-        if tv is None:
+        if not self.tv:
             return None
-        return MediaPlayerState.ON if tv.get("power") else MediaPlayerState.OFF
+        return MediaPlayerState.ON if self.tv.get("power") else MediaPlayerState.OFF
 
     @property
     def volume_level(self) -> float | None:
         """0..1."""
-        tv = self.tv
-        if tv is None or tv.get("volume") is None:
+        volume = self.tv.get("volume")
+        if volume is None:
             return None
-        return max(0.0, min(1.0, float(tv["volume"]) / 100))
+        return max(0.0, min(1.0, float(volume) / 100))
 
     @property
     def is_volume_muted(self) -> bool | None:
         """Muted."""
-        tv = self.tv
-        return None if tv is None else bool(tv.get("muted"))
+        return bool(self.tv.get("muted")) if self.tv else None
 
     @property
     def source_list(self) -> list[str]:
-        """The property's enabled channels."""
+        """The enabled channels of the TV's package."""
         return [source_name(c) for c in self._channels()]
 
     def _current_channel(self) -> dict[str, Any] | None:
-        tv = self.tv or {}
+        tv = self.tv
         if not tv.get("channel_id"):
             return None
         return self.hub.channel_by_id(tv["channel_id"]) or {
@@ -141,15 +136,14 @@ class HotelTvMediaPlayer(HotelTvRoomEntity, MediaPlayerEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Channel number and TV details."""
-        tv = self.tv or {}
-        devices = self.room.get("devices") or []
+        tv = self.tv
         return {
             "channel_number": tv.get("channel_number"),
             "channel_name": tv.get("channel_name"),
-            "tv_device_id": tv.get("id"),
-            "tv_name": tv.get("name"),
+            "tv_id": self.tv_id,
+            "kind": tv.get("kind"),
+            "paired": tv.get("paired"),
             "last_seen_at": tv.get("last_seen_at"),
-            "tv_count": len(devices),
         }
 
     async def async_turn_on(self) -> None:

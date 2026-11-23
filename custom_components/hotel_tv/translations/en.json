@@ -2,122 +2,120 @@
   "config": {
     "step": {
       "user": {
-        "title": "Connect to Hotel TV",
-        "description": "In the Hotel TV admin open **Settings → API tokens**, create a token and copy it. Then enter the address of the Hotel TV server and the token.",
+        "title": "Pair with Hotel TV",
+        "description": "In the Hotel TV admin open **Настройки → Home Assistant** (Settings → Home Assistant) and press **Генерирай код** (Generate code). Enter the server address shown there and the code. The code is valid for 10 minutes and works once.",
         "data": {
           "url": "Server address",
-          "token": "API token"
+          "code": "Pairing code"
         },
         "data_description": {
           "url": "The address you open the Hotel TV admin at, for example http://192.168.1.20:3210",
-          "token": "Starts with htv_"
+          "code": "Like ABCD-EFGH"
         }
       },
       "reauth_confirm": {
-        "title": "New API token for {property}",
-        "description": "Hotel TV no longer accepts the API token of {property}. Create a new token in **Settings → API tokens** and enter it here. Exposed room controls are kept.",
+        "title": "Pair {property} again",
+        "description": "Hotel TV no longer accepts this Home Assistant for {property} (the connection was removed, or this entry was made before pairing existed). Generate a new code in **Настройки → Home Assistant** on {url} and enter it here. The controls chosen for the TVs are kept.",
         "data": {
-          "token": "API token"
+          "code": "Pairing code"
         }
       },
       "reconfigure": {
         "title": "Change the Hotel TV server",
-        "description": "Change the server address, for example after it moved. Leave the token empty to keep the current one. It must be the same property.",
+        "description": "Change the server address, for example after it moved, and pair again: generate a new code in **Настройки → Home Assistant** on the server. It must be the same property.",
         "data": {
           "url": "Server address",
-          "token": "API token"
+          "code": "Pairing code"
         }
       }
     },
     "error": {
       "invalid_url": "This is not a valid web address.",
-      "invalid_auth": "The API token was refused.",
+      "insecure_url": "Use https://, or an address in the local network (a private IP address or a .local / .lan name).",
+      "invalid_code": "The code is wrong or was already used. Generate a new one.",
+      "expired_code": "The code has expired (it is valid for 10 minutes). Generate a new one.",
+      "rate_limited": "Too many attempts. Wait a minute and try again.",
+      "unreachable": "The Hotel TV server could not reach Home Assistant. Check Home Assistant's local network URL (Settings → System → Network) and that the server can reach it.",
+      "no_ha_url": "Home Assistant has no URL the server could use. Set the local network URL in Settings → System → Network.",
       "cannot_connect": "Could not connect to the Hotel TV server. Check the address.",
-      "not_hotel_tv": "The server answered, but not like a Hotel TV server. Check the address.",
+      "not_hotel_tv": "The server answered, but not like a Hotel TV server that supports pairing. Check the address and update Hotel TV.",
       "unknown": "Unexpected error"
     },
     "abort": {
-      "already_configured": "This property is already connected. Its address and token have been updated.",
-      "reauth_successful": "The new token has been saved.",
+      "already_configured": "This property is already connected. It has been paired again with the new code.",
+      "reauth_successful": "Paired again.",
       "reconfigure_successful": "The server address has been changed.",
-      "wrong_property": "That token belongs to another property. Use a token of the same property."
+      "wrong_property": "That code belongs to another property. Generate the code for this property.",
+      "other_property_updated": "That code belongs to {property}; its entry has been paired again instead. Generate a code for this property to pair it."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Room controls",
-        "description": "Guests can control some of the room's devices with the TV remote. Only the entities chosen here are ever sent to Hotel TV or controlled from it.",
+        "title": "TV controls",
+        "description": "Guests can control some of the room's devices with the TV remote. Choose them per TV. A TV also gets the entities the hotel bound to it in the Hotel TV admin.",
         "menu_options": {
-          "map_room": "Choose the entities of a room",
-          "fill_pattern": "Fill other rooms by pattern"
+          "map_tv": "Choose the entities of a TV",
+          "fill_pattern": "Fill other TVs by pattern"
         }
       },
-      "map_room": {
-        "title": "Room controls",
-        "description": "Choose a room to pick what its guests may control. A ✓ shows how many entities the room already has.",
+      "map_tv": {
+        "title": "TV controls",
+        "description": "Choose a TV to pick what its guests may control. A ✓ shows how many entities the TV already has.",
         "data": {
-          "room": "Room"
+          "tv": "TV"
         }
       },
-      "room_entities": {
-        "title": "Room {room}",
-        "description": "Choose the thermostats, lights, switches, covers and scenes the guest of room {room} may control from the TV. Only the entities chosen here are ever sent to Hotel TV or controlled from it. Choose none to expose nothing.",
+      "tv_entities": {
+        "title": "{tv}",
+        "description": "Choose the thermostats, lights, switches, covers, scenes, fans, locks and media players the guest may control from the TV {tv}. Entities bound to this TV in the Hotel TV admin are added to these. Choose none to add nothing here.",
         "data": {
           "entities": "Entities"
         }
       },
-      "room_labels": {
-        "title": "Names on the TV: room {room}",
+      "tv_labels": {
+        "title": "Names on the TV: {tv}",
         "description": "The TV shows each entity under its Home Assistant name. Type a different name where you want one, or leave the field empty.\n\n{entities}"
       },
       "fill_pattern": {
-        "title": "Fill other rooms by pattern",
-        "description": "Choose a room that is already set up. For every other room the integration looks for the same entities with that room's name in the entity id (for example `climate.room_203_thermostat` → `climate.room_204_thermostat`) and copies the names shown on the TV. You see what was found before anything is saved.",
+        "title": "Fill other TVs by pattern",
+        "description": "Choose a TV that is already set up. For every other TV the integration looks for the same entities with the number in that TV's name in the entity id (for example TV 203 → TV 204: `climate.room_203_thermostat` → `climate.room_204_thermostat`) and copies the names shown on the TV. You see what was found before anything is saved.",
         "data": {
-          "source": "Copy from room",
-          "overwrite": "Also replace rooms that already have entities"
+          "source": "Copy from TV",
+          "overwrite": "Also replace TVs that already have entities"
         },
         "data_description": {
-          "overwrite": "Off: only rooms with nothing chosen yet are filled."
+          "overwrite": "Off: only TVs with nothing chosen yet are filled."
         }
       },
       "fill_confirm": {
         "title": "Save the found entities?",
-        "description": "Entities were found for {rooms} room(s). ✓ = found and will be exposed to the guest of that room, ✗ = no such entity (skipped). Rooms listed alone after ✗ have none of the entities and are left as they are.\n\n{result}\n\nSubmit to save."
+        "description": "Entities were found for {tvs} TV(s). ✓ = found and will be exposed on that TV, ✗ = no such entity (skipped). TVs listed alone after ✗ have none of the entities and are left as they are.\n\n{result}\n\nSubmit to save."
       }
     },
     "abort": {
-      "not_loaded": "The integration is not loaded or the property has no rooms. Try again when it is connected.",
-      "no_mapped_rooms": "No room has entities yet. Choose the entities of one room first."
+      "not_loaded": "The integration is not loaded or the property has no TVs. Try again when it is connected.",
+      "no_mapped_tvs": "No TV has entities yet. Choose the entities of one TV first."
     },
     "error": {
-      "nothing_found": "No matching entities were found in the other rooms. The entity ids must contain the room's name (for example its number), and rooms that already have entities are skipped unless you choose to replace them."
+      "nothing_found": "No matching entities were found for the other TVs. The entity ids must contain the number in the TV's name (for example its room number), and TVs that already have entities are skipped unless you choose to replace them."
     }
   },
   "entity": {
     "binary_sensor": {
-      "occupied": {
-        "name": "Occupied"
-      },
-      "tv_online": {
-        "name": "TV online"
+      "online": {
+        "name": "Online"
       }
     },
     "button": {
       "reload": {
-        "name": "Reload TV"
+        "name": "Reload"
       },
       "identify": {
-        "name": "Identify TV"
+        "name": "Identify"
       },
       "refresh_channels": {
         "name": "Refresh channels"
-      }
-    },
-    "media_player": {
-      "tv": {
-        "name": "TV"
       }
     },
     "select": {
@@ -126,9 +124,6 @@
       }
     },
     "sensor": {
-      "guest_name": {
-        "name": "Guest"
-      },
       "current_channel": {
         "name": "Current channel"
       }
@@ -136,7 +131,10 @@
   },
   "exceptions": {
     "auth_failed": {
-      "message": "Hotel TV refused the API token. Enter a new token."
+      "message": "Hotel TV no longer accepts this Home Assistant. Pair again with a new code."
+    },
+    "pairing_required": {
+      "message": "This entry was made with an API token. Pair it with a code from Настройки → Home Assistant."
     },
     "cannot_connect": {
       "message": "Could not connect to the Hotel TV server ({error})."
@@ -150,20 +148,17 @@
     "unknown_package": {
       "message": "There is no channel package {package}."
     },
-    "not_a_room": {
-      "message": "{target} is not a Hotel TV room."
+    "not_a_tv": {
+      "message": "{target} is not a TV of Hotel TV."
     },
-    "no_rooms": {
-      "message": "Choose at least one room (a Hotel TV room device or one of its entities), or turn on \"All rooms\"."
+    "no_tvs": {
+      "message": "Choose at least one TV (a Hotel TV device or one of its entities), or turn on \"All TVs\"."
     },
     "entry_not_loaded": {
       "message": "The Hotel TV property {entry} is not loaded."
     },
     "no_entries": {
       "message": "No Hotel TV property is connected."
-    },
-    "nothing_to_change": {
-      "message": "Give at least one field to change."
     }
   },
   "selector": {
@@ -186,7 +181,7 @@
   "services": {
     "send_message": {
       "name": "Send message",
-      "description": "Shows a message on the TVs of the chosen rooms, or of every room.",
+      "description": "Shows a message on the chosen TVs, or on every TV.",
       "fields": {
         "title": {
           "name": "Title",
@@ -208,75 +203,19 @@
           "name": "Expires in",
           "description": "Hide the message after this long. Empty = until it is deleted."
         },
-        "all_rooms": {
-          "name": "All rooms",
-          "description": "Send to every room of the property (when no room is chosen)."
+        "all_tvs": {
+          "name": "All TVs",
+          "description": "Send to every TV of the property (when no TV is chosen)."
         },
         "config_entry_id": {
           "name": "Property",
-          "description": "With \"All rooms\": only this property. Empty = every connected property."
-        }
-      }
-    },
-    "check_in": {
-      "name": "Check in",
-      "description": "Marks the room occupied, sets the guest and turns the TV on to the welcome screen.",
-      "fields": {
-        "guest_name": {
-          "name": "Guest name",
-          "description": "Shown on the welcome screen."
-        },
-        "guest_locale": {
-          "name": "Guest language",
-          "description": "Language code, for example bg or en."
-        },
-        "welcome_message": {
-          "name": "Welcome message",
-          "description": "Replaces the property's welcome text for this stay."
-        },
-        "checkout_at": {
-          "name": "Check-out",
-          "description": "When the guest leaves."
-        }
-      }
-    },
-    "check_out": {
-      "name": "Check out",
-      "description": "Clears the guest and the room's messages and turns the TV off."
-    },
-    "set_guest": {
-      "name": "Set guest details",
-      "description": "Changes the guest details of the room without a check-in or check-out. Fields left out are kept; an empty text clears the field.",
-      "fields": {
-        "guest_name": {
-          "name": "Guest name",
-          "description": "Shown on the welcome screen."
-        },
-        "guest_locale": {
-          "name": "Guest language",
-          "description": "Language code, for example bg or en."
-        },
-        "welcome_message": {
-          "name": "Welcome message",
-          "description": "Replaces the property's welcome text for this stay."
-        },
-        "occupied": {
-          "name": "Occupied",
-          "description": "Whether a guest is in the room."
-        },
-        "checkin_at": {
-          "name": "Check-in",
-          "description": "When the guest arrived."
-        },
-        "checkout_at": {
-          "name": "Check-out",
-          "description": "When the guest leaves."
+          "description": "With \"All TVs\": only this property. Empty = every connected property."
         }
       }
     },
     "send_command": {
       "name": "Send TV command",
-      "description": "Sends a raw command to the TVs of the chosen rooms.",
+      "description": "Sends a raw command to the chosen TVs.",
       "fields": {
         "command": {
           "name": "Command",

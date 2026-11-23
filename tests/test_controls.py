@@ -293,6 +293,82 @@ def test_light_states() -> None:
     assert lamp["capabilities"] == {"dimmable": False}
 
 
+def test_light_colour() -> None:
+    """A colour light: hue / saturation, warm–cold white within its range."""
+    attrs = {
+        "supported_color_modes": ["hs", "color_temp"],
+        "color_mode": "hs",
+        "brightness": 255,
+        "hs_color": [30.4, 80.6],
+        "color_temp_kelvin": None,
+        "min_color_temp_kelvin": 2200,
+        "max_color_temp_kelvin": 6500,
+    }
+    control = build_control("light.rgb", "on", attrs)
+    assert control["capabilities"] == {
+        "dimmable": True,
+        "color": True,
+        "color_temp": True,
+        "min_kelvin": 2200,
+        "max_kelvin": 6500,
+    }
+    assert control["state"]["hue"] == 30
+    assert control["state"]["saturation"] == 81
+    assert control["state"]["color_mode"] == "color"
+    assert service_call(
+        "light.rgb", "set_color", {"hue": 120, "saturation": 100}, attrs
+    ) == ServiceCall("light", "turn_on", {"entity_id": "light.rgb", "hs_color": [120, 100]})
+    assert service_call(
+        "light.rgb", "set_color_temp", {"kelvin": 3000}, attrs
+    ) == ServiceCall(
+        "light", "turn_on", {"entity_id": "light.rgb", "color_temp_kelvin": 3000}
+    )
+    with pytest.raises(ControlRequestError):
+        service_call("light.rgb", "set_color_temp", {"kelvin": 9000}, attrs)
+    with pytest.raises(ControlRequestError):
+        service_call("light.lamp", "set_color", {"hue": 1, "saturation": 1}, ONOFF)
+
+
+def test_cover_position_capability() -> None:
+    """Only an open / close cover says it has no position."""
+    assert control_capabilities("cover", {"supported_features": 15}) == {}
+    assert control_capabilities("cover", {"supported_features": 3}) == {"position": False}
+    assert control_capabilities("cover", {}) == {}
+
+
+def test_fan_lock_media() -> None:
+    """Fans (speed), locks, media players (play / pause, volume)."""
+    fan = build_control(
+        "fan.ceiling", "on", {"percentage": 66, "percentage_step": 33.3, "supported_features": 1}
+    )
+    assert fan["kind"] == "fan"
+    assert fan["state"] == {"on": True, "percentage": 66}
+    assert fan["capabilities"] == {"speed": True, "percentage_step": 33.3}
+    assert service_call(
+        "fan.ceiling", "set_percentage", {"percentage": 33}, {"supported_features": 1}
+    ) == ServiceCall("fan", "set_percentage", {"entity_id": "fan.ceiling", "percentage": 33})
+    assert service_call("fan.ceiling", "set_percentage", {"percentage": 0}, {"supported_features": 1}).service == "turn_off"
+    with pytest.raises(ControlRequestError):
+        service_call("fan.ceiling", "set_percentage", {"percentage": 50}, {})
+
+    lock = build_control("lock.front_door", "locked", {})
+    assert lock["kind"] == "lock"
+    assert lock["state"] == {"locked": True, "state": "locked"}
+    assert service_call("lock.front_door", "unlock", {}, {}) == ServiceCall(
+        "lock", "unlock", {"entity_id": "lock.front_door"}
+    )
+
+    attrs = {"supported_features": 1 | 4 | 16384, "volume_level": 0.35}
+    media = build_control("media_player.speaker", "playing", attrs)
+    assert media["kind"] == "media"
+    assert media["state"] == {"state": "playing", "volume": 35, "muted": False}
+    assert media["capabilities"] == {"play_pause": True, "volume": True}
+    assert service_call("media_player.speaker", "set_volume", {"volume": 40}, attrs) == ServiceCall(
+        "media_player", "volume_set", {"entity_id": "media_player.speaker", "volume_level": 0.4}
+    )
+    assert service_call("media_player.speaker", "play_pause", {}, attrs).service == "media_play_pause"
+
+
 def test_switch_cover_scene() -> None:
     """The simple kinds."""
     assert build_control("switch.fan", "on", {})["state"] == {"on": True}
@@ -317,7 +393,7 @@ def test_unavailable_and_missing() -> None:
 def test_not_exposable() -> None:
     """Domains outside the control table are refused."""
     with pytest.raises(ValueError):
-        build_control("lock.front_door", "locked", {})
+        build_control("vacuum.robot", "docked", {})
 
 
 # -- guest requests → service calls ---------------------------------------------
