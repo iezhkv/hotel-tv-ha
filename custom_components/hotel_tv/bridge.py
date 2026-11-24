@@ -30,8 +30,8 @@ from homeassistant.core import (
 )
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.icon import async_get_icons
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.icon import async_get_icons
 from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
 import voluptuous as vol
@@ -142,7 +142,7 @@ class ControlsBridge:
         self._started = True
         try:
             self._component_icons = await async_get_icons(self.hass, "entity_component")
-        except Exception:  # noqa: BLE001 - icons are a nicety; the controls still go
+        except Exception:
             _LOGGER.debug("Could not read Home Assistant's default icons", exc_info=True)
         self._track()
         for tv_id in list(self.mapping):

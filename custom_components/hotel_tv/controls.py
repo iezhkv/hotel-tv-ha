@@ -7,9 +7,8 @@ running Home Assistant.
 
 from __future__ import annotations
 
-import colorsys
-
 from collections.abc import Mapping
+import colorsys
 from dataclasses import dataclass, field
 import math
 from typing import Any

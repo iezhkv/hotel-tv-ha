@@ -576,3 +576,65 @@ async def test_webhook_unregistered_on_unload(
     body, headers = signed(SECRET, {"type": "ping", "nonce": "n"})
     resp = await client.post(URL, data=body, headers=headers)
     assert (await resp.text()) == ""
+
+
+async def test_tv_without_the_server(
+    hass: HomeAssistant,
+    aioclient_mock: Any,
+    setup_entry: Callable[..., Any],
+    post: Any,
+    states: None,
+    hass_storage: dict[str, Any],
+) -> None:
+    """Home Assistant restarts while the server is gone: the TVs it knew still work.
+
+    What the server last said is on disk; the entry starts from it instead of
+    waiting for the server, and a TV signed with its own key reads its controls.
+    """
+    import aiohttp
+
+    from custom_components.hotel_tv.hub import STORAGE_VERSION
+
+    entry = await setup_entry(options=OPTIONS)
+    hub = entry.runtime_data
+    saved = hub._snapshot()
+    assert TV101 in saved["tvs"]
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    await hass.async_block_till_done()
+
+    # The server is gone: every request fails.
+    aioclient_mock.clear_requests()
+    for path in ("info", "devices", "channels", "packages", "control-requests"):
+        aioclient_mock.get(f"http://hoteltv.local:3210/api/v1/{path}", exc=aiohttp.ClientConnectionError())
+    import re
+
+    aioclient_mock.put(re.compile(r".*/controls$"), exc=aiohttp.ClientConnectionError())
+    aioclient_mock.get(re.compile(r".*/api/v1/.*"), exc=aiohttp.ClientConnectionError())
+    hass_storage[f"hotel_tv.{entry.entry_id}"] = {
+        "version": STORAGE_VERSION, "minor_version": 1, "key": f"hotel_tv.{entry.entry_id}", "data": saved,
+    }
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
+
+    hub = entry.runtime_data
+    assert hub.available is False
+    assert TV101 in hub.tvs
+    status, answer = await post({"type": "tv.controls"}, key=tv_key(SECRET, TV101), device=TV101)
+    assert status == 200
+    assert answer["ok"] is True
+    assert answer["controls"]
+
+
+async def test_never_heard_from_the_server(hass: HomeAssistant, aioclient_mock: Any) -> None:
+    """Nothing on disk and no server: the entry waits (setup retry), as before."""
+    import aiohttp
+    from homeassistant.config_entries import ConfigEntryState
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from .conftest import ENTRY_DATA, PROPERTY
+
+    aioclient_mock.get("http://hoteltv.local:3210/api/v1/info", exc=aiohttp.ClientConnectionError())
+    entry = MockConfigEntry(domain="hotel_tv", title="Hotel Demo", unique_id=PROPERTY, data=dict(ENTRY_DATA))
+    entry.add_to_hass(hass)
+    assert not await hass.config_entries.async_setup(entry.entry_id)
+    assert entry.state is ConfigEntryState.SETUP_RETRY

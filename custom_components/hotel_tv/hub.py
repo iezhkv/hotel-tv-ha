@@ -3,6 +3,13 @@
 Holds the TVs, channels and packages in memory, keeps them current from the server's
 event stream (`GET /api/v1/events`, SSE) and a periodic full refresh, and tells the
 entities through dispatcher signals.
+
+What the server last said is also kept on disk (`.storage/hotel_tv.<entry id>`), so
+that Home Assistant can start without the server — after a restart during an outage,
+or years after the server is gone: the TVs it listed as paired and the entities bound
+to them stay known, and the TVs keep driving their devices through the webhook
+(docs/HA-PAIRING.md §4). Everything that needs the server is unavailable until it
+answers again; nothing is forgotten for not hearing from it.
 """
 
 from __future__ import annotations
@@ -19,6 +26,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .api import (
@@ -44,6 +52,23 @@ if TYPE_CHECKING:
     from .wire import WireHandler
 
 _LOGGER = logging.getLogger(__name__)
+
+STORAGE_VERSION = 1
+# What the server last said is written this long after a change (seconds).
+SAVE_DELAY = 10
+
+
+def snapshot_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
+    """Where a property's last known TVs, channels and packages are kept."""
+    return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}")
+
+
+async def async_read_snapshot(
+    hass: HomeAssistant, entry_id: str
+) -> dict[str, Any] | None:
+    """The last thing the server said, or None when nothing was ever saved."""
+    data = await snapshot_store(hass, entry_id).async_load()
+    return data if isinstance(data, dict) and isinstance(data.get("tvs"), dict) else None
 
 DEVICE_STATE_FIELDS = (
     "power",
@@ -128,6 +153,7 @@ class HotelTvHub:
         self._stop_event = asyncio.Event()
         self._reauth_started = False
         self._refresh_lock = asyncio.Lock()
+        self._store = snapshot_store(hass, entry.entry_id)
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -144,6 +170,36 @@ class HotelTvHub:
         self.last_refresh_at = dt_util.utcnow().isoformat()
         self._update_hub_device()
         self._remove_stale_devices()
+        self.async_schedule_save()
+
+    @callback
+    def async_restore(self, snapshot: dict[str, Any]) -> None:
+        """Start from what the server last said: it does not answer now.
+
+        Nothing is removed for not being confirmed (no stale-device sweep): the
+        server is only silent. The first refresh that reaches it puts things right.
+        """
+        self.tvs = {str(k): v for k, v in snapshot["tvs"].items() if isinstance(v, dict)}
+        channels, packages = snapshot.get("channels"), snapshot.get("packages")
+        self.channels = channels if isinstance(channels, list) else []
+        self.packages = packages if isinstance(packages, list) else []
+        self.last_refresh_at = snapshot.get("saved_at")
+        self.available = False
+        self._update_hub_device()
+
+    @callback
+    def async_schedule_save(self) -> None:
+        """Keep what the server said (never called while starting from the disk)."""
+        self._store.async_delay_save(self._snapshot, SAVE_DELAY)
+
+    def _snapshot(self) -> dict[str, Any]:
+        return {
+            "info": self.info,
+            "tvs": self.tvs,
+            "channels": self.channels,
+            "packages": self.packages,
+            "saved_at": dt_util.utcnow().isoformat(),
+        }
 
     @callback
     def async_start(self) -> None:
@@ -266,6 +322,7 @@ class HotelTvHub:
             self.packages = packages
             self.apply_tvs(tvs)
             self._set_available(True, force_signal=changed)
+            self.async_schedule_save()
             return True
 
     @callback
@@ -298,6 +355,7 @@ class HotelTvHub:
         if self._store_tv(tv_id, tv):
             async_dispatcher_send(self.hass, signal_new_entities(self.entry.entry_id))
         self._remap_controls()
+        self.async_schedule_save()
 
     @callback
     def _remap_controls(self) -> None:
@@ -507,6 +565,7 @@ class HotelTvHub:
                 del self.tvs[tv_id]
                 self._remove_device(tv_id)
                 self._remap_controls()
+                self.async_schedule_save()
             return
         except HotelTvAuthError:
             self.async_start_reauth()
@@ -530,3 +589,4 @@ class HotelTvHub:
         self.channels = channels
         self.packages = packages
         self._signal_update()
+        self.async_schedule_save()

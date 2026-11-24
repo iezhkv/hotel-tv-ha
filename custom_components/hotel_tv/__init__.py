@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from homeassistant.components import webhook
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_TOKEN, CONF_URL, Platform
@@ -14,7 +16,7 @@ from homeassistant.helpers.typing import ConfigType
 from .api import HotelTvAuthError, HotelTvClient, HotelTvError
 from .bridge import ControlsBridge
 from .const import CONF_PROPERTY_ID, CONF_SECRET, CONF_WEBHOOK_ID, DOMAIN
-from .hub import HotelTvHub
+from .hub import HotelTvHub, async_read_snapshot, snapshot_store
 from .services import async_setup_services
 from .wire import WireHandler
 
@@ -25,6 +27,8 @@ PLATFORMS: list[Platform] = [
     Platform.SELECT,
     Platform.SENSOR,
 ]
+
+_LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -59,11 +63,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: HotelTvConfigEntry) -> b
             translation_domain=DOMAIN, translation_key="auth_failed"
         ) from err
     except HotelTvError as err:
-        raise ConfigEntryNotReady(
-            translation_domain=DOMAIN,
-            translation_key="cannot_connect",
-            translation_placeholders={"error": str(err)},
-        ) from err
+        # The server does not answer. With what it last said on disk, start from that:
+        # the TVs it listed as paired keep driving their devices through the webhook
+        # (the hub keeps knocking and catches up when the server is back). Never
+        # heard from it at all: nothing to stand on yet — try again later.
+        snapshot = await async_read_snapshot(hass, entry.entry_id)
+        if snapshot is None:
+            raise ConfigEntryNotReady(
+                translation_domain=DOMAIN,
+                translation_key="cannot_connect",
+                translation_placeholders={"error": str(err)},
+            ) from err
+        _LOGGER.warning(
+            "Hotel TV is unreachable (%s): starting from what it last said (%s)",
+            err,
+            snapshot.get("saved_at") or "unknown time",
+        )
+        stored_info = snapshot.get("info")
+        hub = HotelTvHub(
+            hass, entry, client, stored_info if isinstance(stored_info, dict) else {}
+        )
+        hub.async_restore(snapshot)
 
     hub.bridge = ControlsBridge(hass, entry, hub)
     hub.wire = WireHandler(hass, entry, hub)
@@ -101,6 +121,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: HotelTvConfigEntry) -> 
     if unloaded:
         await entry.runtime_data.async_unload()
     return unloaded
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: HotelTvConfigEntry) -> None:
+    """The property is removed from Home Assistant: forget what its server said."""
+    await snapshot_store(hass, entry.entry_id).async_remove()
 
 
 async def async_remove_config_entry_device(

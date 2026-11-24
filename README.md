@@ -325,6 +325,11 @@ Every request is checked against the entity's **current** attributes. The hotel'
   resumes with `Last-Event-ID`, reconnects with backoff (1 s → 30 s) and is considered dead after
   45 s without data (the server pings every 20 s).
 - A full refresh every 5 minutes and after each reconnect as a safety net.
+- **Without the server**: what it last said (the TVs, which are paired, the entities bound to
+  them) is kept in `.storage/hotel_tv.<entry id>`. When the server does not answer at start-up
+  the entry loads from it: its entities are unavailable, but the webhook answers, so the TVs keep
+  driving their own devices — after a restart during an outage, or long after the server is gone.
+  A hotel it has never heard from waits for the server, as before.
 - Upgrading from a version that worked with rooms: the old room devices are removed at start-up,
   and the exposed controls have to be chosen again per TV (**Configure**), since they were stored
   per room.
