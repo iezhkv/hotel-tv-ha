@@ -434,8 +434,10 @@ class HotelTvHub:
             _LOGGER.debug(
                 "Hotel TV event stream connected (cursor %s)", self.last_event_id
             )
-            if opened_before:
+            if opened_before or not self.available:
                 # The resume replays what was missed; this also catches anything else.
+                # Started from the disk (the server was away): its first answer is the
+                # moment to read everything, not the next periodic refresh.
                 self.hass.async_create_task(self.async_refresh())
             opened_before = True
             if self.bridge is not None:
