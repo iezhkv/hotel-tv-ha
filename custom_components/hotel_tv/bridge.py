@@ -29,6 +29,8 @@ from homeassistant.core import (
     callback,
 )
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.icon import async_get_icons
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.start import async_at_started
 from homeassistant.util import dt as dt_util
@@ -46,6 +48,8 @@ from .controls import (
     ControlRequestError,
     build_control,
     control_kind,
+    entity_icon,
+    light_favorites,
     remembered_hvac_mode,
     service_call,
 )
@@ -122,6 +126,8 @@ class ControlsBridge:
         # Thermostats: "measures temperature / humidity", once seen. The attribute
         # comes and goes with its value; the capability must not follow it.
         self._measured: dict[str, set[str]] = {}
+        # Home Assistant's default icons per domain and device class (entity_icon).
+        self._component_icons: Mapping[str, Any] = {}
         self._started = False
         self.last_error: str | None = None
 
@@ -134,6 +140,10 @@ class ControlsBridge:
 
     async def _async_ha_started(self, _hass: HomeAssistant) -> None:
         self._started = True
+        try:
+            self._component_icons = await async_get_icons(self.hass, "entity_component")
+        except Exception:  # noqa: BLE001 - icons are a nicety; the controls still go
+            _LOGGER.debug("Could not read Home Assistant's default icons", exc_info=True)
         self._track()
         for tv_id in list(self.mapping):
             await self._async_put_tv(tv_id)
@@ -264,6 +274,7 @@ class ControlsBridge:
             self.mapping.get(tv_id, {}).items()
         ):
             state = self.hass.states.get(entity_id)
+            registered = er.async_get(self.hass).async_get(entity_id)
             control = build_control(
                 entity_id,
                 state.state if state else None,
@@ -271,9 +282,20 @@ class ControlsBridge:
                 label=label,
                 position=position,
                 unit=unit,
+                icon=entity_icon(
+                    entity_id,
+                    state.attributes if state else None,
+                    (registered.icon or registered.original_icon) if registered else None,
+                    self._component_icons,
+                ),
             )
             if control["kind"] == "climate" and control["available"]:
                 self._latch_measured(control)
+            if control["kind"] == "light":
+                # The light's favourite colours (its more-info dialog's): the TV's shortcuts.
+                favorites = light_favorites(registered.options.get("light") if registered else None)
+                if favorites:
+                    control["capabilities"]["favorites"] = favorites
             previous = sent.get(entity_id)
             if not control["available"] and previous is not None:
                 # An unavailable entity has lost its attributes: keep what the TV

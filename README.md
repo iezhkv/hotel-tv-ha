@@ -263,6 +263,9 @@ The integration then:
 - **sends the definitions** (`PUT /devices/{id}/controls`, the entity id is the control key) when
   Home Assistant starts and whenever the selection changes; a TV whose selection is emptied
   gets an empty list;
+- **sends what Home Assistant shows**: each entity's own icon (the one set on it, else its
+  domain's default — `mdi:…`; the TV draws it instead of an icon picked by hand) and a light's
+  favourite colours from its more-info dialog (the shortcuts of the TV's light panel);
 - **keeps the TV up to date**: entity state changes are pushed (`PATCH …/controls/{entity_id}`),
   debounced by 0.5 s; changed capabilities (modes, limits) or names re-send the definitions; an
   unavailable entity is shown as unavailable;

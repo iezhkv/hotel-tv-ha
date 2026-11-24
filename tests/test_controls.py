@@ -662,3 +662,39 @@ def test_unknown_domain_request() -> None:
     """Nothing is ever called for a domain outside the table."""
     with pytest.raises(ControlRequestError):
         service_call("lock.front_door", "turn_on", {}, {})
+
+
+def test_light_favorites() -> None:
+    """Home Assistant's favourite colours become the TV's shortcuts."""
+    from custom_components.hotel_tv.controls import light_favorites
+
+    assert light_favorites(None) == []
+    assert light_favorites({"favorite_colors": "x"}) == []
+    assert light_favorites(
+        {
+            "favorite_colors": [
+                {"hs_color": [26.341, 96.471]},
+                {"color_temp_kelvin": 2702},
+                {"rgb_color": [255, 0, 0]},
+                {"rgbw_color": [1, 2, 3, 4]},
+                "junk",
+            ]
+        }
+    ) == [
+        {"hue": 26, "saturation": 96},
+        {"kelvin": 2702},
+        {"hue": 0, "saturation": 100},
+    ]
+
+
+def test_entity_icon() -> None:
+    """The icon Home Assistant shows: the attribute, the registry's, the domain's default."""
+    from custom_components.hotel_tv.controls import entity_icon
+
+    defaults = {"light": {"_": {"default": "mdi:lightbulb"}}, "cover": {"_": {"default": "mdi:window-open"}, "blind": {"default": "mdi:blinds"}}}
+    assert entity_icon("light.a", {"icon": "mdi:wall-sconce-round"}, "mdi:lamp", defaults) == "mdi:wall-sconce-round"
+    assert entity_icon("light.a", {}, "hass:lamp", defaults) == "mdi:lamp"
+    assert entity_icon("light.a", None, None, defaults) == "mdi:lightbulb"
+    assert entity_icon("cover.a", {"device_class": "blind"}, None, defaults) == "mdi:blinds"
+    assert entity_icon("cover.a", {"device_class": "door"}, None, defaults) == "mdi:window-open"
+    assert entity_icon("light.a", {"icon": "custom:thing"}, None, {}) is None

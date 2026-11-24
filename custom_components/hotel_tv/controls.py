@@ -7,6 +7,8 @@ running Home Assistant.
 
 from __future__ import annotations
 
+import colorsys
+
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 import math
@@ -313,6 +315,69 @@ def control_capabilities(
     return {}
 
 
+def entity_icon(
+    entity_id: str,
+    attributes: Mapping[str, Any] | None,
+    registry_icon: str | None = None,
+    component_icons: Mapping[str, Any] | None = None,
+) -> str | None:
+    """The entity's icon as Home Assistant shows it: `mdi:<name>`, or None.
+
+    In Home Assistant's own order: the `icon` attribute (set by the user or the
+    integration), the entity registry's icon, then the default of the entity's
+    domain and device class (`component_icons`: the `entity_component` icon
+    translations). Only Material Design Icons are sent (`hass:` is their old
+    prefix); anything else — a custom icon set — is None and the TV shows its own.
+    """
+    attributes = attributes or {}
+    domain = entity_id.split(".", 1)[0]
+    by_class = (component_icons or {}).get(domain) or {}
+    device_class = attributes.get("device_class")
+    fallback = by_class.get(device_class) if device_class else None
+    default = (fallback or by_class.get("_") or {}).get("default")
+    for candidate in (attributes.get("icon"), registry_icon, default):
+        if not isinstance(candidate, str):
+            continue
+        name = candidate.strip()
+        if name.startswith("hass:"):
+            name = "mdi:" + name[5:]
+        if name.startswith("mdi:") and 4 < len(name) <= 100:
+            return name
+    return None
+
+
+def light_favorites(options: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """A light's favourite colours for the TV's shortcuts.
+
+    `options` are the entity's registry options of the light domain
+    (`favorite_colors`, set in the light's more-info dialog): a list of
+    `{"hs_color": [h, s]}`, `{"rgb_color": [r, g, b]}` and
+    `{"color_temp_kelvin": k}` (also rgbw / rgbww, which are skipped). The TV
+    gets `{"hue", "saturation"}` or `{"kelvin"}`; at most eight. None set (Home
+    Assistant then shows its own defaults): an empty list, the TV shows its own.
+    """
+    raw = (options or {}).get("favorite_colors")
+    result: list[dict[str, Any]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        kelvin = _float_or_none(item.get("color_temp_kelvin"))
+        hs = item.get("hs_color")
+        rgb = item.get("rgb_color")
+        if kelvin is not None:
+            result.append({"kelvin": round(kelvin)})
+        elif isinstance(hs, (list, tuple)) and len(hs) == 2:
+            hue, saturation = _float_or_none(hs[0]), _float_or_none(hs[1])
+            if hue is not None and saturation is not None:
+                result.append({"hue": round(hue), "saturation": round(saturation)})
+        elif isinstance(rgb, (list, tuple)) and len(rgb) == 3:
+            channels = [_float_or_none(v) for v in rgb]
+            if all(v is not None for v in channels):
+                hue, saturation, _ = colorsys.rgb_to_hsv(*(v / 255 for v in channels))
+                result.append({"hue": round(hue * 360), "saturation": round(saturation * 100)})
+    return result[:8]
+
+
 def build_control(
     entity_id: str,
     state: str | None,
@@ -321,6 +386,7 @@ def build_control(
     label: str | None = None,
     position: int = 0,
     unit: str = DEFAULT_UNIT,
+    icon: str | None = None,
 ) -> dict[str, Any]:
     """The full control definition for `PUT /devices/{id}/controls`.
 
@@ -336,7 +402,8 @@ def build_control(
         "kind": kind,
         "label": (label or "").strip()
         or str(attributes.get("friendly_name") or entity_id),
-        "icon": None,
+        # Home Assistant's own icon of the entity (`entity_icon`), "mdi:<name>".
+        "icon": icon,
         "position": position,
         "state": control_state(kind, state, attributes),
         "capabilities": control_capabilities(kind, attributes, unit=unit),
